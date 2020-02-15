@@ -3,6 +3,7 @@
 import argparse
 import logging
 import time
+import json
 from time import sleep
 
 import board
@@ -33,16 +34,12 @@ ads = ADS.ADS1015(i2c)
 chan = AnalogIn(ads, ADS.P0)
 
 last_message_time = int(time.time())
-pressure = 0.0
-pressure_direction = True
 
 def send_position_update(data_stream):
     msg = osc_message_builder.OscMessageBuilder(address="/position")
-    msg.add_arg(data_stream.TPV['alt'])
     msg.add_arg(data_stream.TPV['lat'])
     msg.add_arg(data_stream.TPV['lon'])
     display_client.send(msg.build())
-    logger.info(fr"Altitude = {data_stream.TPV['alt']}")
     logger.info(fr"Latitude = {data_stream.TPV['lat']}")
     logger.info(fr"Latitude = {data_stream.TPV['lon']}")
 
@@ -50,16 +47,20 @@ def send_pressure_update(pressure):
     msg = osc_message_builder.OscMessageBuilder(address='/pressure')
     msg.add_arg(pressure)
     pressure_client.send(msg.build())
+    display_client.send(msg.build())
     logger.info(f'Pressure = {pressure}')
 
-def send_imu_update():
-    return ''
+def send_imu_update(imu_state):
+    msg = osc_message_builder.OscMessageBuilder(address='/imu')
+    msg.add_arg(json.dumps(imu_state))
+    display_client.send(msg.build())
+    logger.info(f'IMU = {imu_state}')
     
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument('--display_ip', default='127.0.0.1', help='The ip of the display osc server')
   parser.add_argument('--display_port', type=int, default=10002, help='The port the display osc server is listening on')
-  parser.add_argument('--pressure_ip', default='10.0.1.58', help='The ip of the pressure osc server')
+  parser.add_argument('--pressure_ip', default='127.0.0.1', help='The ip of the pressure osc server')
   parser.add_argument('--pressure_port', type=int, default=10003, help='The port the pressure osc server is listening on')
   args = parser.parse_args()
 
@@ -78,5 +79,6 @@ if __name__ == '__main__':
                   last_message_time = current_time
                   send_position_update(data_stream)
                   send_pressure_update(chan.value)
+                  send_imu_update(imu_state)
 
             
