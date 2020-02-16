@@ -413,7 +413,7 @@ def IMU_state():
     if 0:                       #Change to '0' to stop  showing the angles from the Kalman filter
         outputString +="# kalmanX %5.2f   kalmanY %5.2f #" % (kalmanX,kalmanY)
 
-    print(outputString)
+    #print(outputString)
 
     #slow program down a bit, makes the output more readable
     time.sleep(0.03)
