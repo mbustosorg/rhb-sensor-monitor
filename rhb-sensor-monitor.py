@@ -1,5 +1,6 @@
 """ Monitor IMU """
 
+import piglow
 import argparse
 import logging
 import time
