@@ -41,7 +41,7 @@ def send_position_update(data_stream):
 
 def send_pressure_update(pressure):
     global last_pressure
-    
+
     if abs(pressure - last_pressure) > 300:
         last_pressure = pressure
         msg = osc_message_builder.OscMessageBuilder(address='/pressure')

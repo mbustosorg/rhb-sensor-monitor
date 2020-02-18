@@ -22,6 +22,7 @@ def read_pressure():
         if raw_adc > 32767:
             raw_adc -= 65535
     except Exception as e:
+        print("x")
         return raw_adc
     return raw_adc
 
