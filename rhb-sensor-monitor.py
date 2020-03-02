@@ -15,9 +15,12 @@
 import piglow
 import argparse
 import logging
+import datetime
 import time
 import json
 from time import sleep
+
+import pandas as pd
 
 import pressure_sensor
 
@@ -39,27 +42,54 @@ logger.setLevel(logging.INFO)
 gps_socket.connect()
 gps_socket.watch()
 
-last_message_time = int(time.time())
-last_pressure = 0
+persist_period = datetime.timedelta(seconds=10)
+pressure_records = pd.DataFrame(columns=['timestamps', 'level'])
+position_records = pd.DataFrame(columns=['timestamps', 'lat', 'lon'])
+imu_records = pd.DataFrame(columns=['timestamps', 'heading'])
+last_persist = datetime.datetime.now()
 
-def send_position_update(data_stream):
+
+def initialize_histories():
+    """ Re-initialize history records """
+    global pressure_records
+    global position_records
+    global imu_records
+    global last_persist
+    
+    pressure_records = pd.DataFrame(columns=['timestamps', 'level'])
+    position_records = pd.DataFrame(columns=['timestamps', 'lat', 'lon'])
+    imu_records = pd.DataFrame(columns=['timestamps', 'heading'])
+    last_persist = datetime.datetime.now()
+    
+    
+def send_position_update(gps):
     """ Broadcast the current position """
-    msg = osc_message_builder.OscMessageBuilder(address="/position")
-    msg.add_arg(data_stream.TPV['lat'])
-    msg.add_arg(data_stream.TPV['lon'])
-    built = msg.build()
-    display_client.send(built)
-    mobile_client.send(built)
-    logger.info(fr"Latitude = {data_stream.TPV['lat']}")
-    logger.info(fr"Latitude = {data_stream.TPV['lon']}")
+    global position_records
+
+    if ('n/a' not in str(gps.TPV['lat']) and 'n/a' not in str(gps.TPV['lon'])):
+        lat = float(gps.TPV['lat'])
+        lon = float(gps.TPV['lon'])
+        if (len(position_records['timestamps']) == 0) or \
+           (abs(lon - position_records['lon'].iloc[-1]) > 0.00002) or \
+           (abs(lat - position_records['lat'].iloc[-1]) > 0.00002):
+            msg = osc_message_builder.OscMessageBuilder(address="/position")
+            msg.add_arg(lat)
+            msg.add_arg(lon)
+            built = msg.build()
+            display_client.send(built)
+            mobile_client.send(built)
+            logger.info(fr"Latitude = {data_stream.TPV['lat']}")
+            logger.info(fr"Latitude = {data_stream.TPV['lon']}")
+            position_records = position_records.append({'timestamps' : datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f'),
+                                                        'lat' : lat,
+                                                        'lon' : lon}, ignore_index=True)
 
 
 def send_pressure_update(pressure):
     """ Broadcast the current accumulator pressure """
-    global last_pressure
+    global pressure_records
 
-    if abs(pressure - last_pressure) > 300:
-        last_pressure = pressure
+    if (len(pressure_records['timestamps']) == 0) or (abs(pressure - pressure_records['level'].iloc[-1]) > 300):
         msg = osc_message_builder.OscMessageBuilder(address='/pressure')
         msg.add_arg(pressure)
         built = msg.build()
@@ -67,13 +97,31 @@ def send_pressure_update(pressure):
         display_client.send(built)
         mobile_client.send(built)
         logger.info(f'Pressure = {pressure}')
+        pressure_records = pressure_records.append({'timestamps' : datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f'),
+                                                    'level' : pressure}, ignore_index=True)
 
 
 def send_imu_update(imu_state):
     """ Broadcast the current IMU state """
-    msg = osc_message_builder.OscMessageBuilder(address='/imu')
-    msg.add_arg(json.dumps(imu_state))
-    display_client.send(msg.build())
+    global imu_records
+    
+    heading = imu_state['heading']['heading']
+    if (len(imu_records['timestamps']) == 0) or (abs(heading - imu_records['heading'].iloc[-1]) > 1.0):
+        msg = osc_message_builder.OscMessageBuilder(address='/imu')
+        msg.add_arg(json.dumps(imu_state))
+        display_client.send(msg.build())
+        imu_records = imu_records.append({'timestamps' : datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f'),
+                                          'heading' : heading}, ignore_index=True)
+
+
+def persist_histories():
+    """ Store off histories periodically """ 
+    if datetime.datetime.now() - last_persist > persist_period:
+        timestamp = str(int(datetime.datetime.now().timestamp()))
+        position_records.to_csv('/home/mauricio/data/positions_' + timestamp + '.csv')
+        pressure_records.to_csv('/home/mauricio/data/pressure_' + timestamp + '.csv')
+        imu_records.to_csv('/home/mauricio/data/heading_' + timestamp + '.csv')
+        initialize_histories()
 
 
 if __name__ == '__main__':
@@ -98,14 +146,12 @@ if __name__ == '__main__':
 
     while True:
         for new_data in gps_socket:
+            persist_histories()
+            send_pressure_update(pressure_sensor.read_pressure())
             imu_state = IMU_state()
             send_imu_update(imu_state)
-            send_pressure_update(pressure_sensor.read_pressure())
             if new_data:
-                current_time = int(time.time())
-                if last_message_time < current_time:
-                    data_stream.unpack(new_data)
-                    logger.info(imu_state)
-                    send_position_update(data_stream)
-                    last_message_time = current_time
+                data_stream.unpack(new_data)
+                logger.info(imu_state)
+                send_position_update(data_stream)
                     
