@@ -42,7 +42,7 @@ logger.setLevel(logging.INFO)
 gps_socket.connect()
 gps_socket.watch()
 
-persist_period = datetime.timedelta(seconds=10)
+persist_period = datetime.timedelta(seconds=600)
 pressure_records = pd.DataFrame(columns=['timestamps', 'level'])
 position_records = pd.DataFrame(columns=['timestamps', 'lat', 'lon'])
 imu_records = pd.DataFrame(columns=['timestamps', 'heading'])
@@ -70,9 +70,11 @@ def send_position_update(gps):
         lat = float(gps.TPV['lat'])
         lon = float(gps.TPV['lon'])
         if (len(position_records['timestamps']) == 0) or \
-           (abs(lon - position_records['lon'].iloc[-1]) > 0.00002) or \
-           (abs(lat - position_records['lat'].iloc[-1]) > 0.00002):
+           (abs(lon - position_records['lon'].iloc[-1]) > 0.000001) or \
+           (abs(lat - position_records['lat'].iloc[-1]) > 0.000001):
             msg = osc_message_builder.OscMessageBuilder(address="/position")
+            if len(position_records['timestamps']) > 0:
+                lat = position_records['lat'].iloc[-1] + 0.00001
             msg.add_arg(lat)
             msg.add_arg(lon)
             built = msg.build()
@@ -152,6 +154,6 @@ if __name__ == '__main__':
             send_imu_update(imu_state)
             if new_data:
                 data_stream.unpack(new_data)
-                logger.info(imu_state)
+                #logger.info(imu_state)
                 send_position_update(data_stream)
                     
