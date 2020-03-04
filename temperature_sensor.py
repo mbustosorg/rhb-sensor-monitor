@@ -1,28 +1,39 @@
+"""
+    Copyright (C) 2020 Mauricio Bustos (m@bustos.org)
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+"""
+
 import glob
-import time
 
-base_dir = '/sys/bus/w1/devices/'
-device_folder = glob.glob(base_dir + '28*')[0]
-device_file = device_folder + '/w1_slave'
+BASE_DIR = '/sys/bus/w1/devices/'
+DEVICE_FOLDER = glob.glob(BASE_DIR + '28*')[0]
+DEVICE_FILE = DEVICE_FOLDER + '/w1_slave'
 
-def read_temp_raw():
-    with open(device_file, 'r') as f:
-        lines = f.readlines()
+
+def raw_temp():
+    """ Read current temp from sensor """
+    with open(DEVICE_FILE, 'r') as file:
+        lines = file.readlines()
     return lines
 
-def read_temp():
-    lines = read_temp_raw()
-    if lines[0] 
-    while lines[0].strip()[-3:] != 'YES':
-        time.sleep(0.2)
-        lines = read_temp_raw()
-    equals_pos = lines[1].find('t=')
-    if equals_pos != -1:
-        temp_string = lines[1][equals_pos+2:]
+
+def current_temp():
+    """ Current temperature """
+    lines = raw_temp()
+    if lines[0][-3:] != 'YES':
+        lines = raw_temp()
+        line_2 = lines[1].split('=')
+        temp_string = line_2[1]
         temp_c = float(temp_string) / 1000.0
         temp_f = temp_c * 9.0 / 5.0 + 32.0
         return temp_c, temp_f
-
-while True:
-    print(read_temp())
-    time.sleep(1)
+    return 0.0, 0.0

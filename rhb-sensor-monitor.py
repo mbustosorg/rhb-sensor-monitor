@@ -12,69 +12,69 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-import piglow
 import argparse
-import logging
 import datetime
-import time
 import json
-from time import sleep
-
+import logging
 import pandas as pd
+from gps3 import gps3
+from pythonosc import osc_message_builder
+from pythonosc import udp_client
 
 import pressure_sensor
-
-from pythonosc import udp_client
-from pythonosc import osc_bundle_builder
-from pythonosc import osc_message_builder
-
-from gps3 import gps3
+import temperature_sensor
 from imu.berryIMU import IMU_state
+
+import pydevd_pycharm
+
+pydevd_pycharm.settrace('10.0.1.30', port=12345, stdoutToServer=True, stderrToServer=True)
 
 gps_socket = gps3.GPSDSocket()
 data_stream = gps3.DataStream()
 
 FORMAT = '%(asctime)-15s %(message)s'
 logging.basicConfig(format=FORMAT)
-logger = logging.getLogger('IMU')
+logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 gps_socket.connect()
 gps_socket.watch()
 
-persist_period = datetime.timedelta(seconds=600)
-pressure_records = pd.DataFrame(columns=['timestamps', 'level'])
-position_records = pd.DataFrame(columns=['timestamps', 'lat', 'lon'])
-imu_records = pd.DataFrame(columns=['timestamps', 'heading'])
-last_persist = datetime.datetime.now()
+PERSIST_PERIOD = datetime.timedelta(seconds=600)
+TEMP_PERIOD = datetime.timedelta(seconds=300)
 
 
-def initialize_histories():
-    """ Re-initialize history records """
-    global pressure_records
-    global position_records
-    global imu_records
-    global last_persist
-    
-    pressure_records = pd.DataFrame(columns=['timestamps', 'level'])
-    position_records = pd.DataFrame(columns=['timestamps', 'lat', 'lon'])
-    imu_records = pd.DataFrame(columns=['timestamps', 'heading'])
-    last_persist = datetime.datetime.now()
-    
-    
-def send_position_update(gps):
+def handle_exception(func):
+    """ Handle exception when interacting with peripherals """
+
+    def wrapper():
+        try:
+            func()
+        except Exception as exception:
+            logger.error(exception)
+
+    return wrapper
+
+
+def now():
+    """ Formatted date string """
+    return datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')
+
+
+@handle_exception
+def send_position_update(gps, history):
     """ Broadcast the current position """
-    global position_records
+    position_records = history['position']
 
-    if ('n/a' not in str(gps.TPV['lat']) and 'n/a' not in str(gps.TPV['lon'])):
+    if 'n/a' not in str(gps.TPV['lat']) and 'n/a' not in str(gps.TPV['lon']):
         lat = float(gps.TPV['lat'])
         lon = float(gps.TPV['lon'])
-        if (len(position_records['timestamps']) == 0) or \
-           (abs(lon - position_records['lon'].iloc[-1]) > 0.000001) or \
-           (abs(lat - position_records['lat'].iloc[-1]) > 0.000001):
-            msg = osc_message_builder.OscMessageBuilder(address="/position")
-            if len(position_records['timestamps']) > 0:
+        if position_records['timestamps'].empty or \
+                (abs(lon - position_records['lon'].iloc[-1]) > 0.000001) or \
+                (abs(lat - position_records['lat'].iloc[-1]) > 0.000001):
+            if not position_records['timestamps'].empty:
                 lat = position_records['lat'].iloc[-1] + 0.00001
+            msg = osc_message_builder.OscMessageBuilder(address="/position")
             msg.add_arg(lat)
             msg.add_arg(lon)
             built = msg.build()
@@ -82,16 +82,18 @@ def send_position_update(gps):
             mobile_client.send(built)
             logger.info(fr"Latitude = {data_stream.TPV['lat']}")
             logger.info(fr"Latitude = {data_stream.TPV['lon']}")
-            position_records = position_records.append({'timestamps' : datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f'),
-                                                        'lat' : lat,
-                                                        'lon' : lon}, ignore_index=True)
+            history['position'] = position_records.append(
+                {'timestamps': now(),
+                 'lat': lat,
+                 'lon': lon}, ignore_index=True)
 
 
-def send_pressure_update(pressure):
+@handle_exception
+def send_pressure_update(history):
     """ Broadcast the current accumulator pressure """
-    global pressure_records
-
-    if (len(pressure_records['timestamps']) == 0) or (abs(pressure - pressure_records['level'].iloc[-1]) > 300):
+    pressure_records = history['pressure']
+    pressure = pressure_sensor.read_pressure()
+    if pressure_records['timestamps'].empty or (abs(pressure - pressure_records['level'].iloc[-1]) > 300):
         msg = osc_message_builder.OscMessageBuilder(address='/pressure')
         msg.add_arg(pressure)
         built = msg.build()
@@ -99,31 +101,66 @@ def send_pressure_update(pressure):
         display_client.send(built)
         mobile_client.send(built)
         logger.info(f'Pressure = {pressure}')
-        pressure_records = pressure_records.append({'timestamps' : datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f'),
-                                                    'level' : pressure}, ignore_index=True)
+        history['pressure'] = pressure_records.append(
+            {'timestamps': now(),
+             'level': pressure}, ignore_index=True)
 
 
-def send_imu_update(imu_state):
+@handle_exception
+def send_imu_update(history):
     """ Broadcast the current IMU state """
-    global imu_records
-    
-    heading = imu_state['heading']['heading']
-    if (len(imu_records['timestamps']) == 0) or (abs(heading - imu_records['heading'].iloc[-1]) > 1.0):
+    imu_records = history['imu']
+    updated_imu_state = IMU_state()
+    heading = updated_imu_state['heading']['heading']
+    if imu_records['timestamps'].empty or (abs(heading - imu_records['heading'].iloc[-1]) > 1.0):
         msg = osc_message_builder.OscMessageBuilder(address='/imu')
-        msg.add_arg(json.dumps(imu_state))
-        display_client.send(msg.build())
-        imu_records = imu_records.append({'timestamps' : datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f'),
-                                          'heading' : heading}, ignore_index=True)
+        msg.add_arg(json.dumps(updated_imu_state))
+        built = msg.build()
+        display_client.send(built)
+        mobile_client.send(built)
+        history['imu'] = imu_records.append({'timestamps': now(),
+                                             'heading': heading}, ignore_index=True)
 
 
-def persist_histories():
-    """ Store off histories periodically """ 
-    if datetime.datetime.now() - last_persist > persist_period:
+@handle_exception
+def send_temp_update(history):
+    """ Broadcast the current temperature """
+    temp_records = history['temp']
+    if not temp_records['timestamps'].empty:
+        last_timestamp = datetime.datetime.now().strptime(temp_records['temp_f'].iloc[-1], '%Y-%m-%dT%H:%M:%S.%f')
+    if temp_records['timestamps'].empty or datetime.datetime.now().timestamp() - last_timestamp > TEMP_PERIOD:
+        updated_temp = temperature_sensor.current_temp()
+        if updated_temp[0] > 0.0 and \
+                (temp_records['timestamps'].empty or (abs(updated_temp[1] - temp_records['temp_f'].iloc[-1]) > 1.0)):
+            logger.info(f'Temperature = {updated_temp}')
+            msg = osc_message_builder.OscMessageBuilder(address='/temperature')
+            msg.add_arg(updated_temp[1])
+            built = msg.build()
+            display_client.send(built)
+            mobile_client.send(built)
+            history['temp'] = temp_records.append({'timestamps': now(),
+                                                   'temp_f': updated_temp[1]}, ignore_index=True)
+
+
+def persist_histories(history):
+    """ Store off histories periodically """
+    if datetime.datetime.now() - history['last_persist'] > PERSIST_PERIOD:
         timestamp = str(int(datetime.datetime.now().timestamp()))
-        position_records.to_csv('/home/mauricio/data/positions_' + timestamp + '.csv')
-        pressure_records.to_csv('/home/mauricio/data/pressure_' + timestamp + '.csv')
-        imu_records.to_csv('/home/mauricio/data/heading_' + timestamp + '.csv')
-        initialize_histories()
+        history['position'].to_csv('/home/mauricio/data/positions_' + timestamp + '.csv')
+        history['pressure'].to_csv('/home/mauricio/data/pressure_' + timestamp + '.csv')
+        history['imu'].to_csv('/home/mauricio/data/heading_' + timestamp + '.csv')
+        history['temp'].to_csv('/home/mauricio/data/temp_' + timestamp + '.csv')
+        return initialized_histories()
+    return history
+
+
+def initialized_histories():
+    """ Re-initialize history records """
+    return {'last_persist': datetime.datetime.now(),
+            'pressure': pd.DataFrame(columns=['timestamps', 'level']),
+            'position': pd.DataFrame(columns=['timestamps', 'lat', 'lon']),
+            'imu': pd.DataFrame(columns=['timestamps', 'heading']),
+            'temp': pd.DataFrame(columns=['timestamps', 'temp_f'])}
 
 
 if __name__ == '__main__':
@@ -146,14 +183,17 @@ if __name__ == '__main__':
     pressure_client = udp_client.UDPClient(args.pressure_ip, args.pressure_port)
     mobile_client = udp_client.UDPClient(args.mobile_ip, args.mobile_port)
 
+    data_history = initialized_histories()
     while True:
-        for new_data in gps_socket:
-            persist_histories()
-            send_pressure_update(pressure_sensor.read_pressure())
-            imu_state = IMU_state()
-            send_imu_update(imu_state)
-            if new_data:
-                data_stream.unpack(new_data)
-                #logger.info(imu_state)
-                send_position_update(data_stream)
-                    
+        try:
+            for new_data in gps_socket:
+                data_history = persist_histories(data_history)
+
+                send_pressure_update(data_history)
+                send_imu_update(data_history)
+                send_temp_update(data_history)
+                if new_data:
+                    data_stream.unpack(new_data)
+                    send_position_update(data_stream, data_history)
+        except Exception as exception:
+            logger.error(exception)

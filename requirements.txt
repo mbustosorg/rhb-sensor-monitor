@@ -1,0 +1,3 @@
+pandas
+gps3
+pythonosc

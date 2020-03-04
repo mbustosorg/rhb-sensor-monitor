@@ -12,8 +12,9 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-import smbus
 import time
+
+import smbus
 
 bus = smbus.SMBus(1)
 
@@ -22,20 +23,15 @@ bus = smbus.SMBus(1)
 #		0x8483(33923)	AINP = AIN0 and AINN = AIN1, +/- 2.048V
 #				Continuous conversion mode, 128SPS
 
-data = [0x84,0x83]
-bus.write_i2c_block_data(0x48, 0x01, data)
+DATA = [0x84, 0x83]
+bus.write_i2c_block_data(0x48, 0x01, DATA)
 time.sleep(0.5)
+
 
 def read_pressure():
     """ Read pressure sensor from ADC """
-    try:
-        raw_adc = 0
-        data = bus.read_i2c_block_data(0x48, 0x00, 2)
-        raw_adc = data[0] * 256 + data[1]
-        if raw_adc > 32767:
-            raw_adc -= 65535
-    except Exception as e:
-        print("x")
-        return raw_adc
+    raw_data = bus.read_i2c_block_data(0x48, 0x00, 2)
+    raw_adc = raw_data[0] * 256 + raw_data[1]
+    if raw_adc > 32767:
+        raw_adc -= 65535
     return raw_adc
-
