@@ -46,13 +46,11 @@ TEMP_PERIOD = datetime.timedelta(seconds=300)
 
 def handle_exception(func):
     """ Handle exception when interacting with peripherals """
-
-    def wrapper():
+    def wrapper(*args, **kwargs):
         try:
-            func()
+            func(*args, **kwargs)
         except Exception as exception:
             logger.error(exception)
-
     return wrapper
 
 
@@ -112,7 +110,7 @@ def send_imu_update(history):
     imu_records = history['imu']
     updated_imu_state = IMU_state()
     heading = updated_imu_state['heading']['heading']
-    if imu_records['timestamps'].empty or (abs(heading - imu_records['heading'].iloc[-1]) > 1.0):
+    if imu_records['heading'].empty or (abs(heading - imu_records['heading'].iloc[-1]) > 1.0):
         msg = osc_message_builder.OscMessageBuilder(address='/imu')
         msg.add_arg(json.dumps(updated_imu_state))
         built = msg.build()
@@ -127,8 +125,8 @@ def send_temp_update(history):
     """ Broadcast the current temperature """
     temp_records = history['temp']
     if not temp_records['timestamps'].empty:
-        last_timestamp = datetime.datetime.now().strptime(temp_records['temp_f'].iloc[-1], '%Y-%m-%dT%H:%M:%S.%f')
-    if temp_records['timestamps'].empty or datetime.datetime.now().timestamp() - last_timestamp > TEMP_PERIOD:
+        last_timestamp = datetime.datetime.now().strptime(temp_records['timestamps'].iloc[-1], '%Y-%m-%dT%H:%M:%S.%f')
+    if temp_records['timestamps'].empty or datetime.datetime.now() - last_timestamp > TEMP_PERIOD:
         updated_temp = temperature_sensor.current_temp()
         if updated_temp[0] > 0.0 and \
                 (temp_records['timestamps'].empty or (abs(updated_temp[1] - temp_records['temp_f'].iloc[-1]) > 1.0)):

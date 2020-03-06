@@ -29,10 +29,8 @@ def raw_temp():
 def current_temp():
     """ Current temperature """
     lines = raw_temp()
-    if lines[0][-3:] != 'YES':
-        lines = raw_temp()
-        line_2 = lines[1].split('=')
-        temp_string = line_2[1]
+    if lines[0].replace('\n', '')[-3:] == 'YES':
+        temp_string = lines[1].replace('\n', '').split('=')[1]
         temp_c = float(temp_string) / 1000.0
         temp_f = temp_c * 9.0 / 5.0 + 32.0
         return temp_c, temp_f
