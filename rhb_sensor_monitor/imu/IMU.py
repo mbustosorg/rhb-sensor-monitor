@@ -1,7 +1,7 @@
 import smbus
 bus = smbus.SMBus(1)
-from imu.LSM9DS0 import *
-from imu.LSM9DS1 import *
+from rhb_sensor_monitor.imu.LSM9DS0 import *
+from rhb_sensor_monitor.imu.LSM9DS1 import *
 import time
 
 

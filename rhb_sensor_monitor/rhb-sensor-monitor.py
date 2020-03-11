@@ -21,9 +21,8 @@ from gps3 import gps3
 from pythonosc import osc_message_builder
 from pythonosc import udp_client
 
-import pressure_sensor
-import temperature_sensor
-from imu.berryIMU import IMU_state
+from rhb_sensor_monitor import pressure_sensor, poof_track as pt, temperature_sensor
+from rhb_sensor_monitor.imu.berryIMU import IMU_state
 
 import pydevd_pycharm
 
@@ -43,6 +42,8 @@ gps_socket.watch()
 PERSIST_PERIOD = datetime.timedelta(seconds=600)
 TEMP_PERIOD = datetime.timedelta(seconds=300)
 
+poof_track = pt.PoofTrack()
+
 
 def handle_exception(func):
     """ Handle exception when interacting with peripherals """
@@ -59,6 +60,16 @@ def now():
     return datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')
 
 
+def broadcast(endpoint, value):
+    """ Broadcast `value' """
+    msg = osc_message_builder.OscMessageBuilder(address=endpoint)
+    msg.add_arg(value)
+    built = msg.build()
+    display_client.send(built)
+    mobile_client.send(built)
+    pressure_client.send(built)
+
+
 @handle_exception
 def send_position_update(gps, history):
     """ Broadcast the current position """
@@ -68,22 +79,18 @@ def send_position_update(gps, history):
         lat = float(gps.TPV['lat'])
         lon = float(gps.TPV['lon'])
         if position_records['timestamps'].empty or \
-                (abs(lon - position_records['lon'].iloc[-1]) > 0.000001) or \
-                (abs(lat - position_records['lat'].iloc[-1]) > 0.000001):
+                (abs(lon - position_records['lon'].iloc[-1]) > 0.00005) or \
+                (abs(lat - position_records['lat'].iloc[-1]) > 0.00005):
             if not position_records['timestamps'].empty:
                 lat = position_records['lat'].iloc[-1] + 0.00001
-            msg = osc_message_builder.OscMessageBuilder(address="/position")
-            msg.add_arg(lat)
-            msg.add_arg(lon)
-            built = msg.build()
-            display_client.send(built)
-            mobile_client.send(built)
-            logger.info(fr"Latitude = {data_stream.TPV['lat']}")
-            logger.info(fr"Latitude = {data_stream.TPV['lon']}")
+            broadcast("/position/lat", lat)
+            broadcast("/position/lon", lon)
             history['position'] = position_records.append(
                 {'timestamps': now(),
                  'lat': lat,
                  'lon': lon}, ignore_index=True)
+            logger.info(fr"Latitude = {data_stream.TPV['lat']}")
+            logger.info(fr"Latitude = {data_stream.TPV['lon']}")
 
 
 @handle_exception
@@ -91,17 +98,17 @@ def send_pressure_update(history):
     """ Broadcast the current accumulator pressure """
     pressure_records = history['pressure']
     pressure = pressure_sensor.read_pressure()
-    if pressure_records['timestamps'].empty or (abs(pressure - pressure_records['level'].iloc[-1]) > 300):
-        msg = osc_message_builder.OscMessageBuilder(address='/pressure')
-        msg.add_arg(pressure)
-        built = msg.build()
-        pressure_client.send(built)
-        display_client.send(built)
-        mobile_client.send(built)
-        logger.info(f'Pressure = {pressure}')
+    poof_track.add_observation(pressure)
+    if pressure_records['timestamps'].empty or poof_track.poofing():
+        broadcast('/pressure', float(pressure))
         history['pressure'] = pressure_records.append(
             {'timestamps': now(),
              'level': pressure}, ignore_index=True)
+        broadcast('/poof_count', float(poof_track.poof_count))
+        logger.info(f'Pressure = {pressure}')
+    elif poof_track.poofing():
+        poof_track.stop()
+        broadcast('/poof_seconds', poof_track.poof_time)
 
 
 @handle_exception
@@ -111,13 +118,10 @@ def send_imu_update(history):
     updated_imu_state = IMU_state()
     heading = updated_imu_state['heading']['heading']
     if imu_records['heading'].empty or (abs(heading - imu_records['heading'].iloc[-1]) > 1.0):
-        msg = osc_message_builder.OscMessageBuilder(address='/imu')
-        msg.add_arg(json.dumps(updated_imu_state))
-        built = msg.build()
-        display_client.send(built)
-        mobile_client.send(built)
+        broadcast('/imu', json.dumps(updated_imu_state))
         history['imu'] = imu_records.append({'timestamps': now(),
                                              'heading': heading}, ignore_index=True)
+        logger.info(f'Heading = {heading}')
 
 
 @handle_exception
@@ -130,14 +134,10 @@ def send_temp_update(history):
         updated_temp = temperature_sensor.current_temp()
         if updated_temp[0] > 0.0 and \
                 (temp_records['timestamps'].empty or (abs(updated_temp[1] - temp_records['temp_f'].iloc[-1]) > 1.0)):
-            logger.info(f'Temperature = {updated_temp}')
-            msg = osc_message_builder.OscMessageBuilder(address='/temperature')
-            msg.add_arg(updated_temp[1])
-            built = msg.build()
-            display_client.send(built)
-            mobile_client.send(built)
+            broadcast('/temperature', updated_temp[1])
             history['temp'] = temp_records.append({'timestamps': now(),
                                                    'temp_f': updated_temp[1]}, ignore_index=True)
+            logger.info(f'Temperature = {updated_temp}')
 
 
 def persist_histories(history):
@@ -158,7 +158,11 @@ def initialized_histories():
             'pressure': pd.DataFrame(columns=['timestamps', 'level']),
             'position': pd.DataFrame(columns=['timestamps', 'lat', 'lon']),
             'imu': pd.DataFrame(columns=['timestamps', 'heading']),
-            'temp': pd.DataFrame(columns=['timestamps', 'temp_f'])}
+            'temp': pd.DataFrame(columns=['timestamps', 'temp_f']),
+            'poof_start': None,
+            'poof_count': 0,
+            'poof_time': 0.0,
+            'pressure_queue': deque(maxlen=PRESSURE_QUEUE_LEN)}
 
 
 if __name__ == '__main__':

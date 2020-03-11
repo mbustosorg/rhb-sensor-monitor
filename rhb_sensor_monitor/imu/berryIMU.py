@@ -20,12 +20,11 @@
 #
 #    http://ozzmaker.com/
 
-import sys
 import time
 import math
-import imu.IMU as IMU
+import rhb_sensor_monitor.imu.IMU as IMU
 import datetime
-import os
+
 # If the IMU is upside down (Skull logo facing up), change this value to 1
 IMU_UPSIDE_DOWN = 0
 
