@@ -30,6 +30,7 @@ logger.setLevel(logging.INFO)
 last_message_time = int(time.time())
 last_pressure = 0
 
+
 def send_pressure_update(pressure):
     """ Broadcast the current accumulator pressure """
     global last_pressure
@@ -66,4 +67,3 @@ if __name__ == '__main__':
             current_pressure += 1000
             send_pressure_update(current_pressure)
             last_message_time = current_time
-                    

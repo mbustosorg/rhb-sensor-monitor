@@ -16,15 +16,14 @@ import argparse
 import datetime
 import json
 import logging
-import pandas as pd
+
+import pydevd_pycharm
 from gps3 import gps3
 from pythonosc import osc_message_builder
 from pythonosc import udp_client
 
-from rhb_sensor_monitor import pressure_sensor, poof_track as pt, temperature_sensor
+from rhb_sensor_monitor import pressure_sensor, poof_track as pt, temperature_sensor, metric_logging as ml
 from rhb_sensor_monitor.imu.berryIMU import IMU_state
-
-import pydevd_pycharm
 
 pydevd_pycharm.settrace('10.0.1.30', port=12345, stdoutToServer=True, stderrToServer=True)
 
@@ -39,10 +38,10 @@ logger.setLevel(logging.INFO)
 gps_socket.connect()
 gps_socket.watch()
 
-PERSIST_PERIOD = datetime.timedelta(seconds=600)
 TEMP_PERIOD = datetime.timedelta(seconds=300)
 
 poof_track = pt.PoofTrack()
+metrics = ml.MetricLogging(datetime.timedelta(seconds=600), '/home/mauricio/data')
 
 
 def handle_exception(func):
@@ -53,11 +52,6 @@ def handle_exception(func):
         except Exception as exception:
             logger.error(exception)
     return wrapper
-
-
-def now():
-    """ Formatted date string """
-    return datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')
 
 
 def broadcast(endpoint, value):
@@ -71,22 +65,20 @@ def broadcast(endpoint, value):
 
 
 @handle_exception
-def send_position_update(gps, history):
+def send_position_update(gps):
     """ Broadcast the current position """
-    position_records = history['position']
-
     if 'n/a' not in str(gps.TPV['lat']) and 'n/a' not in str(gps.TPV['lon']):
         lat = float(gps.TPV['lat'])
         lon = float(gps.TPV['lon'])
-        if position_records['timestamps'].empty or \
-                (abs(lon - position_records['lon'].iloc[-1]) > 0.00005) or \
-                (abs(lat - position_records['lat'].iloc[-1]) > 0.00005):
-            if not position_records['timestamps'].empty:
-                lat = position_records['lat'].iloc[-1] + 0.00001
+        if metrics.position.empty or \
+                (abs(lon - metrics.position['lon'].iloc[-1]) > 0.00005) or \
+                (abs(lat - metrics.position['lat'].iloc[-1]) > 0.00005):
+            if not metrics.position.empty:
+                lat = metrics.position['lat'].iloc[-1] + 0.00001
             broadcast("/position/lat", lat)
             broadcast("/position/lon", lon)
-            history['position'] = position_records.append(
-                {'timestamps': now(),
+            metrics.position = metrics.position.append(
+                {'timestamp': metrics.now_string(),
                  'lat': lat,
                  'lon': lon}, ignore_index=True)
             logger.info(fr"Latitude = {data_stream.TPV['lat']}")
@@ -94,15 +86,14 @@ def send_position_update(gps, history):
 
 
 @handle_exception
-def send_pressure_update(history):
+def send_pressure_update():
     """ Broadcast the current accumulator pressure """
-    pressure_records = history['pressure']
     pressure = pressure_sensor.read_pressure()
     poof_track.add_observation(pressure)
-    if pressure_records['timestamps'].empty or poof_track.poofing():
+    if metrics.pressure.empty or poof_track.poofing():
         broadcast('/pressure', float(pressure))
-        history['pressure'] = pressure_records.append(
-            {'timestamps': now(),
+        metrics.pressure = metrics.pressure.append(
+            {'timestamp': metrics.now_string(),
              'level': pressure}, ignore_index=True)
         broadcast('/poof_count', float(poof_track.poof_count))
         logger.info(f'Pressure = {pressure}')
@@ -112,57 +103,30 @@ def send_pressure_update(history):
 
 
 @handle_exception
-def send_imu_update(history):
+def send_imu_update():
     """ Broadcast the current IMU state """
-    imu_records = history['imu']
     updated_imu_state = IMU_state()
     heading = updated_imu_state['heading']['heading']
-    if imu_records['heading'].empty or (abs(heading - imu_records['heading'].iloc[-1]) > 1.0):
+    if metrics.imu.empty or (abs(heading - metrics.imu['heading'].iloc[-1]) > 1.0):
         broadcast('/imu', json.dumps(updated_imu_state))
-        history['imu'] = imu_records.append({'timestamps': now(),
-                                             'heading': heading}, ignore_index=True)
+        metrics.imu = metrics.imu.append({'timestamp': metrics.now_string(), 'heading': heading}, ignore_index=True)
         logger.info(f'Heading = {heading}')
 
 
 @handle_exception
-def send_temp_update(history):
+def send_temp_update():
     """ Broadcast the current temperature """
-    temp_records = history['temp']
-    if not temp_records['timestamps'].empty:
-        last_timestamp = datetime.datetime.now().strptime(temp_records['timestamps'].iloc[-1], '%Y-%m-%dT%H:%M:%S.%f')
-    if temp_records['timestamps'].empty or datetime.datetime.now() - last_timestamp > TEMP_PERIOD:
+    if not metrics.temp.empty:
+        last_timestamp = datetime.datetime.now().strptime(metrics.temp['timestamp'].iloc[-1], '%Y-%m-%dT%H:%M:%S.%f')
+    if metrics.temp.empty or datetime.datetime.now() - last_timestamp > TEMP_PERIOD:
         updated_temp = temperature_sensor.current_temp()
         if updated_temp[0] > 0.0 and \
-                (temp_records['timestamps'].empty or (abs(updated_temp[1] - temp_records['temp_f'].iloc[-1]) > 1.0)):
+                (metrics.temp.empty or (abs(updated_temp[1] - metrics.temp['temp_f'].iloc[-1]) > 1.0)):
             broadcast('/temperature', updated_temp[1])
-            history['temp'] = temp_records.append({'timestamps': now(),
-                                                   'temp_f': updated_temp[1]}, ignore_index=True)
+            metrics.temp = metrics.temp.append(
+                {'timestamp': metrics.now_string(),
+                 'temp_f': updated_temp[1]}, ignore_index=True)
             logger.info(f'Temperature = {updated_temp}')
-
-
-def persist_histories(history):
-    """ Store off histories periodically """
-    if datetime.datetime.now() - history['last_persist'] > PERSIST_PERIOD:
-        timestamp = str(int(datetime.datetime.now().timestamp()))
-        history['position'].to_csv('/home/mauricio/data/positions_' + timestamp + '.csv')
-        history['pressure'].to_csv('/home/mauricio/data/pressure_' + timestamp + '.csv')
-        history['imu'].to_csv('/home/mauricio/data/heading_' + timestamp + '.csv')
-        history['temp'].to_csv('/home/mauricio/data/temp_' + timestamp + '.csv')
-        return initialized_histories()
-    return history
-
-
-def initialized_histories():
-    """ Re-initialize history records """
-    return {'last_persist': datetime.datetime.now(),
-            'pressure': pd.DataFrame(columns=['timestamps', 'level']),
-            'position': pd.DataFrame(columns=['timestamps', 'lat', 'lon']),
-            'imu': pd.DataFrame(columns=['timestamps', 'heading']),
-            'temp': pd.DataFrame(columns=['timestamps', 'temp_f']),
-            'poof_start': None,
-            'poof_count': 0,
-            'poof_time': 0.0,
-            'pressure_queue': deque(maxlen=PRESSURE_QUEUE_LEN)}
 
 
 if __name__ == '__main__':
@@ -185,17 +149,16 @@ if __name__ == '__main__':
     pressure_client = udp_client.UDPClient(args.pressure_ip, args.pressure_port)
     mobile_client = udp_client.UDPClient(args.mobile_ip, args.mobile_port)
 
-    data_history = initialized_histories()
     while True:
         try:
             for new_data in gps_socket:
-                data_history = persist_histories(data_history)
+                metrics.persist()
 
-                send_pressure_update(data_history)
-                send_imu_update(data_history)
-                send_temp_update(data_history)
+                send_pressure_update()
+                send_imu_update()
+                send_temp_update()
                 if new_data:
                     data_stream.unpack(new_data)
-                    send_position_update(data_stream, data_history)
+                    send_position_update(data_stream)
         except Exception as exception:
             logger.error(exception)
