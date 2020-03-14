@@ -26,15 +26,17 @@ class PoofTrack:
         self.poof_count = 0
         self.poof_time = 0.0
         self.pressure_queue = deque(maxlen=PRESSURE_QUEUE_LEN)
+        self.last_pressure = 0.0
         self.base_pressure = 0
 
     def add_observation(self, pressure):
         """ Add 'pressure' observation """
+        self.last_pressure = pressure
         self.pressure_queue.appendleft(pressure)
         if len(self.pressure_queue) >= PRESSURE_QUEUE_LEN:
             self.pressure_queue.pop()
         if self.base_pressure == 0 or pressure != self.base_pressure:
-            self.base_pressure = pd.Series(self.pressure_queue).mode()[0]
+            self.base_pressure = pd.Series(self.pressure_queue).median()
         if abs(pressure - self.base_pressure) > 300:
             if not self.poofing():
                 self.start()

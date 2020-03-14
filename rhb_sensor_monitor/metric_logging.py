@@ -19,14 +19,17 @@ import pandas as pd
 
 class MetricLogging:
 
-    def __init__(self, persist_period, location):
+    def __init__(self, persist_period, broadcast_period, location):
         self.location = location
+        self.last_broadcast = datetime.datetime.now()
         self.last_persist = datetime.datetime.now()
         self.pressure = None
         self.position = None
         self.imu = None
         self.temp = None
+        self.disk = None
         self.persist_period = persist_period
+        self.broadcast_period = broadcast_period
         self.initialize()
 
     @staticmethod
@@ -40,12 +43,23 @@ class MetricLogging:
         self.position = pd.DataFrame(columns=['timestamp', 'lat', 'lon'])
         self.imu = pd.DataFrame(columns=['timestamp', 'heading'])
         self.temp = pd.DataFrame(columns=['timestamp', 'temp_f'])
+        self.disk = pd.DataFrame(columns=['timestamp', 'free'])
 
     def persist(self):
         """ Store off histories periodically """
         if datetime.datetime.now() - self.last_persist > self.persist_period:
-            timestamp = str(int(datetime.datetime.now().timestamp()))
+            self.last_persist = datetime.datetime.now()
+            timestamp = str(int(self.last_persist))
             self.position.to_csv(os.path.join(self.location, 'positions_' + timestamp + '.csv'))
-            self.pressure.to_csv(os.path.join('pressure_' + timestamp + '.csv'))
-            self.imu.to_csv(os.path.join('heading_' + timestamp + '.csv'))
-            self.temp.to_csv(os.path.join('temp_' + timestamp + '.csv'))
+            self.pressure.to_csv(os.path.join(self.location, 'pressure_' + timestamp + '.csv'))
+            self.imu.to_csv(os.path.join(self.location, 'heading_' + timestamp + '.csv'))
+            self.temp.to_csv(os.path.join(self.location, 'temp_' + timestamp + '.csv'))
+            self.disk.to_csv(os.path.join(self.location, 'disk_' + timestamp + '.csv'))
+            self.initialize()
+
+    def time_to_broadcast(self):
+        """ Should we broadcast an update? """
+        if datetime.datetime.now() - self.last_broadcast > self.broadcast_period:
+            self.last_broadcast = datetime.datetime.now()
+            return True
+        return False
