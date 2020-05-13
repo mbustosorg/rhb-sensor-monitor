@@ -112,7 +112,7 @@ def update_pressure():
         piglow.show()
         poof_track.stop()
         broadcast('/poof_seconds', float(poof_track.poof_time))
-
+        
 
 @handle_exception
 def update_imu():
@@ -138,8 +138,8 @@ def update_temperature():
             {'timestamp': metrics.now_string(),
              'temp_f': updated_temp[1]}, ignore_index=True)
         logger.info(f'Temperature = {updated_temp[1]}')
-        
 
+        
 @handle_exception
 def update_disk_usage():
     """ Broadcast the current free disk percentage """
