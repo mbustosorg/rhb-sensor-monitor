@@ -22,9 +22,9 @@ from pythonosc import udp_client
 from pythonosc import osc_bundle_builder
 from pythonosc import osc_message_builder
 
-FORMAT = '%(asctime)-15s %(message)s'
+FORMAT = "%(asctime)-15s %(message)s"
 logging.basicConfig(format=FORMAT)
-logger = logging.getLogger('IMU')
+logger = logging.getLogger("IMU")
 logger.setLevel(logging.INFO)
 
 last_message_time = int(time.time())
@@ -37,24 +37,34 @@ def send_pressure_update(pressure):
 
     if abs(pressure - last_pressure) > 300:
         last_pressure = pressure
-        msg = osc_message_builder.OscMessageBuilder(address='/pressure')
+        msg = osc_message_builder.OscMessageBuilder(address="/pressure")
         msg.add_arg(pressure)
         built = msg.build()
         pressure_client.send(built)
         mobile_client.send(built)
-        logger.info(f'Pressure = {pressure}')
+        logger.info(f"Pressure = {pressure}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--pressure_ip', default='10.0.1.58',
-                        help='The ip of the pressure osc server')
-    parser.add_argument('--pressure_port', type=int, default=10003,
-                        help='The port the pressure osc server is listening on')
-    parser.add_argument('--mobile_ip', default='10.0.1.17',
-                        help='The ip of the mobile osc display')
-    parser.add_argument('--mobile_port', type=int, default=10004,
-                        help='The port the mobile osc display is listening on')
+    parser.add_argument(
+        "--pressure_ip", default="10.0.1.58", help="The ip of the pressure osc server"
+    )
+    parser.add_argument(
+        "--pressure_port",
+        type=int,
+        default=10003,
+        help="The port the pressure osc server is listening on",
+    )
+    parser.add_argument(
+        "--mobile_ip", default="10.0.1.17", help="The ip of the mobile osc display"
+    )
+    parser.add_argument(
+        "--mobile_port",
+        type=int,
+        default=10004,
+        help="The port the mobile osc display is listening on",
+    )
     args = parser.parse_args()
 
     pressure_client = udp_client.UDPClient(args.pressure_ip, args.pressure_port)

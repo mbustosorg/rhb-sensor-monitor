@@ -1,3 +1,8 @@
-pandas
+#sudo apt-get install python3-pandas
+#https://numpy.org/devdocs/user/troubleshooting-importerror.html
 gps3
 python-osc
+piglow
+smbus
+RPi.GPIO
+digi-xbee

@@ -16,49 +16,71 @@ import argparse
 import datetime
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import shutil
-import traceback
 
+import pandas as pd
 import piglow
-import pydevd_pycharm
 from gps3 import gps3
 from pythonosc import osc_message_builder
 from pythonosc import udp_client
+from digi.xbee.devices import XBeeDevice, RemoteXBeeDevice, XBee64BitAddress
 
-from rhb_sensor_monitor import pressure_sensor, poof_track as pt, temperature_sensor, metric_logging as ml
+XBEE_COORDINATOR = "0013A20041CB4F87"
+XBEE_ROUTER = "0013A20041CB7786"
+radio = XBeeDevice("/dev/ttyUSB0", 9600)
+radio.open()
+base_xbee = RemoteXBeeDevice(radio, XBee64BitAddress.from_hex_string(XBEE_ROUTER))
+
+from rhb_sensor_monitor import (
+    pressure_sensor,
+    poof_track as pt,
+    temperature_sensor,
+    metric_logging as ml,
+)
 from rhb_sensor_monitor.imu.berryIMU import IMU_state
-
-try:
-    pydevd_pycharm.settrace('10.0.1.30', port=12345, stdoutToServer=True, stderrToServer=True)
-except:
-    pass
 
 gps_socket = gps3.GPSDSocket()
 data_stream = gps3.DataStream()
 
-FORMAT = '%(asctime)-15s %(name)s %(lineno)d %(message)s'
+FORMAT = "%(asctime)-15s|%(module)s|%(lineno)d|%(message)s"
 logging.basicConfig(format=FORMAT)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.INFO)
 
+FILE_HANDLER = RotatingFileHandler("rhb-sensor-monitor.log", maxBytes=40000, backupCount=5)
+FILE_HANDLER.setLevel(logging.INFO)
+FILE_HANDLER.setFormatter(FORMAT)
+logger.addHandler(FILE_HANDLER)
+
 gps_socket.connect()
 gps_socket.watch()
 
-TEMP_PERIOD = datetime.timedelta(seconds=6 * 60) # 10 Observations per hour
-TEMP_PERIOD = datetime.timedelta(seconds=60) # 10 Observations per hour
+TEMP_PERIOD = datetime.timedelta(seconds=6 * 60)  # 10 Observations per hour
+TEMP_PERIOD = datetime.timedelta(seconds=60)  # 60 Observations per hour
 
 poof_track = pt.PoofTrack()
-metrics = ml.MetricLogging(datetime.timedelta(seconds=30 * 60), datetime.timedelta(seconds=10), '/home/mauricio/data')
-metrics = ml.MetricLogging(datetime.timedelta(seconds=30 * 60), datetime.timedelta(seconds=1), '/home/mauricio/data')
+metrics = ml.MetricLogging(
+    datetime.timedelta(seconds=10 * 60),
+    datetime.timedelta(seconds=5),
+    "/home/mauricio/data",
+)
+metrics = ml.MetricLogging(
+    datetime.timedelta(seconds=1 * 60),
+    datetime.timedelta(seconds=1),
+    "/home/mauricio/data",
+)
 
 
 def handle_exception(func):
     """ Handle exception when interacting with peripherals """
+
     def wrapper(*args, **kwargs):
         try:
             func(*args, **kwargs)
         except Exception as exception:
             logger.error(exception)
+
     return wrapper
 
 
@@ -75,22 +97,32 @@ def broadcast(endpoint, value):
 @handle_exception
 def update_position(gps):
     """ Broadcast the current position """
-    if 'n/a' not in str(gps.TPV['lat']) and 'n/a' not in str(gps.TPV['lon']):
-        lat = float(gps.TPV['lat'])
-        lon = float(gps.TPV['lon'])
-        if metrics.position.empty or \
-                (abs(lon - metrics.position['lon'].iloc[-1]) > 0.0005) or \
-                (abs(lat - metrics.position['lat'].iloc[-1]) > 0.0005):
+    if "n/a" not in str(gps.TPV["lat"]) and "n/a" not in str(gps.TPV["lon"]):
+        lat = float(gps.TPV["lat"])
+        lon = float(gps.TPV["lon"])
+        alt = float(gps.TPV["alt"])
+        if (
+            metrics.position.empty
+            or (abs(lon - metrics.position["lon"].iloc[-1]) > 0.0005)
+            or (abs(lat - metrics.position["lat"].iloc[-1]) > 0.0005)
+            or (abs(alt - metrics.position["alt"].iloc[-1]) > 10.0)
+        ):
             if not metrics.position.empty:
-                lat = metrics.position['lat'].iloc[-1] + 0.00001
-            broadcast('/position/lat', lat)
-            broadcast('/position/lon', lon)
-            metrics.position = metrics.position.append(
-                {'timestamp': metrics.now_string(),
-                 'lat': lat,
-                 'lon': lon}, ignore_index=True)
+                lat = metrics.position["lat"].iloc[-1] + 0.00001
+            broadcast("/position/lat", lat)
+            broadcast("/position/lon", lon)
+            broadcast("/position/alt", alt)
+            metrics.position = pd.concat(
+                [
+                    metrics.position,
+                    pd.DataFrame.from_records(
+                        [{"timestamp": metrics.now_string(), "lat": lat, "lon": lon, "alt": alt}]
+                    ),
+                ]
+            )
             logger.info(fr"Latitude = {data_stream.TPV['lat']}")
             logger.info(fr"Latitude = {data_stream.TPV['lon']}")
+            logger.info(fr"Altitude = {data_stream.TPV['alt']}")
 
 
 @handle_exception
@@ -101,91 +133,141 @@ def update_pressure():
     if metrics.pressure.empty or poof_track.poofing():
         piglow.red(64)
         piglow.show()
-        broadcast('/pressure', float(pressure))
-        metrics.pressure = metrics.pressure.append(
-            {'timestamp': metrics.now_string(),
-             'level': pressure}, ignore_index=True)
-        broadcast('/poof_count', float(poof_track.poof_count))
-        logger.info(f'Pressure = {pressure}')
+        broadcast("/pressure", float(pressure))
+        metrics.pressure = pd.concat(
+            [
+                metrics.pressure,
+                pd.DataFrame.from_records(
+                    [{"timestamp": metrics.now_string(), "level": pressure}]
+                ),
+            ]
+        )
+        broadcast("/poof_count", float(poof_track.poof_count))
+        logger.info(f"Pressure = {pressure}")
     elif not poof_track.poofing():
         piglow.red(0)
         piglow.show()
         poof_track.stop()
-        broadcast('/poof_seconds', float(poof_track.poof_time))
-        
+        broadcast("/poof_seconds", float(poof_track.poof_time))
+
 
 @handle_exception
 def update_imu():
     """ Broadcast the current IMU state """
     updated_imu_state = IMU_state()
-    heading = updated_imu_state['heading']['heading']
-    if metrics.imu.empty or (abs(heading - metrics.imu['heading'].iloc[-1]) > 1.0):
-        broadcast('/imu', json.dumps(updated_imu_state))
-        broadcast('/heading', heading)
-        metrics.imu = metrics.imu.append({'timestamp': metrics.now_string(), 'heading': heading}, ignore_index=True)
-        logger.info(f'Heading = {heading}')
+    heading = updated_imu_state["heading"]["heading"]
+    if metrics.imu.empty or (abs(heading - metrics.imu["heading"].iloc[-1]) > 1.0):
+        broadcast("/imu", json.dumps(updated_imu_state))
+        broadcast("/heading", heading)
+        metrics.imu = pd.concat(
+            [
+                metrics.imu,
+                pd.DataFrame.from_records(
+                    [{"timestamp": metrics.now_string(), "heading": heading}]
+                ),
+            ]
+        )
+        logger.info(f"Heading = {heading}")
 
 
 @handle_exception
 def update_temperature():
     """ Broadcast the current temperature """
     if not metrics.temp.empty:
-        last_timestamp = datetime.datetime.strptime(metrics.temp['timestamp'].iloc[-1], '%Y-%m-%dT%H:%M:%S.%f')
+        last_timestamp = datetime.datetime.strptime(
+            metrics.temp["timestamp"].iloc[-1], "%Y-%m-%dT%H:%M:%S.%f"
+        )
     if metrics.temp.empty or (datetime.datetime.now() - last_timestamp > TEMP_PERIOD):
         updated_temp = temperature_sensor.current_temp()
-        broadcast('/temperature', float(int(updated_temp[1])))
-        metrics.temp = metrics.temp.append(
-            {'timestamp': metrics.now_string(),
-             'temp_f': updated_temp[1]}, ignore_index=True)
-        logger.info(f'Temperature = {updated_temp[1]}')
+        broadcast("/temperature", float(int(updated_temp[1])))
+        metrics.temp = pd.concat(
+            [
+                metrics.temp,
+                pd.DataFrame.from_records(
+                    [{"timestamp": metrics.now_string(), "temp_f": updated_temp[1]}]
+                ),
+            ]
+        )
+        logger.info(f"Temperature = {updated_temp[1]}")
 
-        
+
 @handle_exception
 def update_disk_usage():
     """ Broadcast the current free disk percentage """
-    stat = shutil.disk_usage('/')
+    stat = shutil.disk_usage("/")
     free = int(float(stat.free) / float(stat.total) * 100.0)
-    if metrics.disk.empty or (abs(free - metrics.disk['free'].iloc[-1]) > 0.0):
-        broadcast('/free_disk', float(free))
-        metrics.disk = metrics.disk.append({'timestamp': metrics.now_string(), 'free': free}, ignore_index=True)
-        logger.info(f'Free disk = {free}')
+    if metrics.disk.empty or (abs(free - metrics.disk["free"].iloc[-1]) > 0.0):
+        broadcast("/free_disk", float(free))
+        metrics.disk = pd.concat(
+            [
+                metrics.disk,
+                pd.DataFrame.from_records(
+                    [{"timestamp": metrics.now_string(), "free": free}]
+                ),
+            ]
+        )
+        logger.info(f"Free disk = {free}")
 
 
 @handle_exception
 def broadcast_last():
     """ Periodically broadcast last set of data """
+    if metrics.time_to_broadcast_by_radio():
+        try:
+            radio.send_data_async(base_xbee, f"{metrics.position['lat'].iloc[-1]},{metrics.position['lon'].iloc[-1]}")
+        except Exception as exception:
+            logger.error(str(exception))
     if metrics.time_to_broadcast():
-        logger.info('State broadcast')
-        broadcast('/position/lat', float(metrics.position['lat'].iloc[-1]))
-        broadcast('/position/lon', float(metrics.position['lon'].iloc[-1]))
-        broadcast('/heading', float(metrics.imu['heading'].iloc[-1]))
-        broadcast('/pressure', float(poof_track.last_pressure))
-        broadcast('/temperature', float(metrics.temp['temp_f'].iloc[-1]))
-        broadcast('/free_disk', float(metrics.disk['free'].iloc[-1]))
-        broadcast('/poof_count', float(poof_track.poof_count))
-        broadcast('/poof_seconds', float(poof_track.poof_time))
+        logger.debug("State broadcast")
+        if metrics.position.shape[0] > 0:
+            broadcast("/position/lat", float(metrics.position["lat"].iloc[-1]))
+            broadcast("/position/lon", float(metrics.position["lon"].iloc[-1]))
+        if metrics.imu.shape[0] > 0:
+            broadcast("/heading", float(metrics.imu["heading"].iloc[-1]))
+        broadcast("/pressure", float(poof_track.last_pressure))
+        if metrics.temp.shape[0] > 0:
+            broadcast("/temperature", float(metrics.temp["temp_f"].iloc[-1]))
+        if metrics.disk.shape[0] > 0:
+            broadcast("/free_disk", float(metrics.disk["free"].iloc[-1]))
+        broadcast("/poof_count", float(poof_track.poof_count))
+        broadcast("/poof_seconds", float(poof_track.poof_time))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--display_ip', default='127.0.0.1',
-                        help='The ip of the display osc server')
-    parser.add_argument('--display_port', type=int, default=10002,
-                        help='The port the display osc server is listening on')
-    parser.add_argument('--pressure_ip', default='10.0.1.32',
-                        help='The ip of the pressure osc server')
-    parser.add_argument('--pressure_port', type=int, default=10003,
-                        help='The port the pressure osc server is listening on')
-    parser.add_argument('--mobile_ip', default='10.0.1.2',
-                        help='The ip of the mobile osc display')
-    parser.add_argument('--mobile_port', type=int, default=10004,
-                        help='The port the mobile osc display is listening on')
+    parser.add_argument(
+        "--display_ip", default="127.0.0.1", help="The ip of the display osc server"
+    )
+    parser.add_argument(
+        "--display_port",
+        type=int,
+        default=8888,
+        help="The port the display osc server is listening on",
+    )
+    parser.add_argument(
+    "--pressure_ip", default="192.168.1.4", help="The ip of the dial server"
+    )
+    parser.add_argument(
+        "--pressure_port",
+        type=int,
+        default=8888,
+        help="The port the pressure osc server is listening on",
+    )
+    parser.add_argument(
+        "--mobile_ip", default="192.168.1.5", help="The ip of the mobile osc display"
+    )
+    parser.add_argument(
+        "--mobile_port",
+        type=int,
+        default=8888,
+        help="The port the mobile osc display is listening on",
+    )
     args = parser.parse_args()
 
     display_client = udp_client.UDPClient(args.display_ip, args.display_port)
     pressure_client = udp_client.UDPClient(args.pressure_ip, args.pressure_port)
     mobile_client = udp_client.UDPClient(args.mobile_ip, args.mobile_port)
-
+    watchdog_led = False
     while True:
         try:
             metrics.persist()
@@ -197,6 +279,11 @@ if __name__ == '__main__':
             if new_data:
                 data_stream.unpack(new_data)
                 update_position(data_stream)
+                if not watchdog_led:
+                    piglow.blue(64)
+                else:
+                    piglow.blue(0)
+                watchdog_led = not watchdog_led
             broadcast_last()
         except Exception as exception:
             logger.error(exception)

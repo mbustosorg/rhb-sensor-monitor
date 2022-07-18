@@ -18,10 +18,10 @@ import pandas as pd
 
 
 class MetricLogging:
-
     def __init__(self, persist_period, broadcast_period, location):
         self.location = location
         self.last_broadcast = datetime.datetime.now()
+        self.last_radio_broadcast = datetime.datetime.now()
         self.last_persist = datetime.datetime.now()
         self.pressure = None
         self.position = None
@@ -35,31 +35,51 @@ class MetricLogging:
     @staticmethod
     def now_string():
         """ Formatted date string """
-        return datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')
+        return datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f")
 
     def initialize(self):
         """ Re-initialize history records """
-        self.pressure = pd.DataFrame(columns=['timestamp', 'level'])
-        self.position = pd.DataFrame(columns=['timestamp', 'lat', 'lon'])
-        self.imu = pd.DataFrame(columns=['timestamp', 'heading'])
-        self.temp = pd.DataFrame(columns=['timestamp', 'temp_f'])
-        self.disk = pd.DataFrame(columns=['timestamp', 'free'])
+        self.pressure = pd.DataFrame(columns=["timestamp", "level"])
+        self.position = pd.DataFrame(columns=["timestamp", "lat", "lon", "alt"])
+        self.imu = pd.DataFrame(columns=["timestamp", "heading", "speed"])
+        self.temp = pd.DataFrame(columns=["timestamp", "temp_f"])
+        self.disk = pd.DataFrame(columns=["timestamp", "free"])
 
     def persist(self):
         """ Store off histories periodically """
         if datetime.datetime.now() - self.last_persist > self.persist_period:
             self.last_persist = datetime.datetime.now()
-            timestamp = str(int(self.last_persist))
-            self.position.to_csv(os.path.join(self.location, 'positions_' + timestamp + '.csv'))
-            self.pressure.to_csv(os.path.join(self.location, 'pressure_' + timestamp + '.csv'))
-            self.imu.to_csv(os.path.join(self.location, 'heading_' + timestamp + '.csv'))
-            self.temp.to_csv(os.path.join(self.location, 'temp_' + timestamp + '.csv'))
-            self.disk.to_csv(os.path.join(self.location, 'disk_' + timestamp + '.csv'))
+            timestamp = self.last_persist.strftime("%Y%m%d_%H%M")
+            self.position.to_csv(
+                os.path.join(self.location, "positions_" + timestamp + ".csv"),
+                index=False,
+            )
+            self.pressure.to_csv(
+                os.path.join(self.location, "pressure_" + timestamp + ".csv"),
+                index=False,
+            )
+            self.imu.to_csv(
+                os.path.join(self.location, "heading_" + timestamp + ".csv"),
+                index=False,
+            )
+            self.temp.to_csv(
+                os.path.join(self.location, "temp_" + timestamp + ".csv"), index=False
+            )
+            self.disk.to_csv(
+                os.path.join(self.location, "disk_" + timestamp + ".csv"), index=False
+            )
             self.initialize()
 
     def time_to_broadcast(self):
         """ Should we broadcast an update? """
         if datetime.datetime.now() - self.last_broadcast > self.broadcast_period:
             self.last_broadcast = datetime.datetime.now()
+            return True
+        return False
+
+    def time_to_broadcast_by_radio(self):
+        """ Should we broadcast an update? """
+        if datetime.datetime.now() - self.last_radio_broadcast > self.broadcast_period * 10:
+            self.last_radio_broadcast = datetime.datetime.now()
             return True
         return False

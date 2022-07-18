@@ -20,7 +20,6 @@ PRESSURE_QUEUE_LEN = 10000
 
 
 class PoofTrack:
-
     def __init__(self):
         self.poof_start = None
         self.poof_count = 0
@@ -55,5 +54,8 @@ class PoofTrack:
     def stop(self):
         """ Poof stop detected """
         if self.poof_start is not None:
-            self.poof_time = self.poof_time + (datetime.datetime.now() - self.poof_start).total_seconds()
+            self.poof_time = (
+                self.poof_time
+                + (datetime.datetime.now() - self.poof_start).total_seconds()
+            )
             self.poof_start = None
