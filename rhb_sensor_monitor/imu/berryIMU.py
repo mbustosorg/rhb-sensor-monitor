@@ -26,7 +26,7 @@ import rhb_sensor_monitor.imu.IMU as IMU
 import datetime
 
 # If the IMU is upside down (Skull logo facing up), change this value to 1
-IMU_UPSIDE_DOWN = 0
+IMU_UPSIDE_DOWN = 1
 
 RAD_TO_DEG = 57.29578
 M_PI = 3.14159265358979323846
@@ -44,12 +44,12 @@ MAG_MEDIANTABLESIZE = (
 # Calibrating the compass isnt mandatory, however a calibrated
 # compass will result in a more accurate heading value.
 
-magXmin = 0
-magYmin = 0
-magZmin = 0
-magXmax = 0
-magYmax = 0
-magZmax = 0
+magXmin = -882
+magYmin = -282
+magZmin = 1296
+magXmax = 1107
+magYmax = 1785
+magZmax = 2852
 
 """
 Here is an example:

@@ -17,6 +17,7 @@ import datetime
 import json
 import logging
 from logging.handlers import RotatingFileHandler
+import os
 import shutil
 
 import pandas as pd
@@ -56,19 +57,13 @@ logger.addHandler(FILE_HANDLER)
 gps_socket.connect()
 gps_socket.watch()
 
-TEMP_PERIOD = datetime.timedelta(seconds=6 * 60)  # 10 Observations per hour
-TEMP_PERIOD = datetime.timedelta(seconds=60)  # 60 Observations per hour
+TEMP_PERIOD = datetime.timedelta(seconds=5 * 60)
 
 poof_track = pt.PoofTrack()
 metrics = ml.MetricLogging(
     datetime.timedelta(seconds=10 * 60),
     datetime.timedelta(seconds=5),
-    "/home/mauricio/data",
-)
-metrics = ml.MetricLogging(
-    datetime.timedelta(seconds=1 * 60),
-    datetime.timedelta(seconds=1),
-    "/home/mauricio/data",
+    "/home/pi/development/data",
 )
 
 
@@ -94,6 +89,12 @@ def broadcast(endpoint, value):
     pressure_client.send(built)
 
 
+def pi_temp() -> float:
+    """Onboard CPU temperature"""
+    temp = os.popen("cat /sys/class/thermal/thermal_zone0/temp").read()
+    return float(int(float(temp) / 1000.0))
+
+
 @handle_exception
 def update_position(gps):
     """ Broadcast the current position """
@@ -103,12 +104,10 @@ def update_position(gps):
         alt = float(gps.TPV["alt"])
         if (
             metrics.position.empty
-            or (abs(lon - metrics.position["lon"].iloc[-1]) > 0.0005)
-            or (abs(lat - metrics.position["lat"].iloc[-1]) > 0.0005)
-            or (abs(alt - metrics.position["alt"].iloc[-1]) > 10.0)
+            or (abs(lon - metrics.position["lon"].iloc[-1]) > 0.00005)
+            or (abs(lat - metrics.position["lat"].iloc[-1]) > 0.00005)
+            or (abs(alt - metrics.position["alt"].iloc[-1]) > 5.0)
         ):
-            if not metrics.position.empty:
-                lat = metrics.position["lat"].iloc[-1] + 0.00001
             broadcast("/position/lat", lat)
             broadcast("/position/lon", lon)
             broadcast("/position/alt", alt)
@@ -121,7 +120,7 @@ def update_position(gps):
                 ]
             )
             logger.info(fr"Latitude = {data_stream.TPV['lat']}")
-            logger.info(fr"Latitude = {data_stream.TPV['lon']}")
+            logger.info(fr"Longitude = {data_stream.TPV['lon']}")
             logger.info(fr"Altitude = {data_stream.TPV['alt']}")
 
 
@@ -143,20 +142,18 @@ def update_pressure():
             ]
         )
         broadcast("/poof_count", float(poof_track.poof_count))
-        logger.info(f"Pressure = {pressure}")
+        #logger.info(f"Pressure = {pressure}")
     elif not poof_track.poofing():
         piglow.red(0)
         piglow.show()
-        poof_track.stop()
-        broadcast("/poof_seconds", float(poof_track.poof_time))
 
 
 @handle_exception
 def update_imu():
     """ Broadcast the current IMU state """
     updated_imu_state = IMU_state()
-    heading = updated_imu_state["heading"]["heading"]
-    if metrics.imu.empty or (abs(heading - metrics.imu["heading"].iloc[-1]) > 1.0):
+    heading = float(updated_imu_state["heading"]["tiltCompensatedHeading"])
+    if metrics.imu.empty or (abs(heading - metrics.imu["heading"].iloc[-1]) > 1):
         broadcast("/imu", json.dumps(updated_imu_state))
         broadcast("/heading", heading)
         metrics.imu = pd.concat(
@@ -184,7 +181,7 @@ def update_temperature():
             [
                 metrics.temp,
                 pd.DataFrame.from_records(
-                    [{"timestamp": metrics.now_string(), "temp_f": updated_temp[1]}]
+                    [{"timestamp": metrics.now_string(), "temp_f": updated_temp[1], "temp_cpu": pi_temp()}]
                 ),
             ]
         )
@@ -227,6 +224,7 @@ def broadcast_last():
         broadcast("/pressure", float(poof_track.last_pressure))
         if metrics.temp.shape[0] > 0:
             broadcast("/temperature", float(metrics.temp["temp_f"].iloc[-1]))
+            broadcast("/temperature_cpu", float(metrics.temp["temp_cpu"].iloc[-1]))
         if metrics.disk.shape[0] > 0:
             broadcast("/free_disk", float(metrics.disk["free"].iloc[-1]))
         broadcast("/poof_count", float(poof_track.poof_count))
@@ -241,11 +239,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--display_port",
         type=int,
-        default=8888,
+        default=10002,
         help="The port the display osc server is listening on",
     )
     parser.add_argument(
-    "--pressure_ip", default="192.168.1.4", help="The ip of the dial server"
+        "--pressure_ip", default="192.168.1.4", help="The ip of the dial server"
     )
     parser.add_argument(
         "--pressure_port",
@@ -268,6 +266,7 @@ if __name__ == "__main__":
     pressure_client = udp_client.UDPClient(args.pressure_ip, args.pressure_port)
     mobile_client = udp_client.UDPClient(args.mobile_ip, args.mobile_port)
     watchdog_led = False
+    hour = -1
     while True:
         try:
             metrics.persist()
@@ -278,6 +277,13 @@ if __name__ == "__main__":
             new_data = gps_socket.next()
             if new_data:
                 data_stream.unpack(new_data)
+                try:
+                    date = datetime.datetime.strptime(data_stream.TPV["time"], "%Y-%m-%dT%H:%M:%S.%f%z")
+                    if hour != date.hour:
+                        os.system(f'sudo date -s "{data_stream.TPV["time"]}"')
+                        hour = date.hour
+                except:
+                    pass
                 update_position(data_stream)
                 if not watchdog_led:
                     piglow.blue(64)

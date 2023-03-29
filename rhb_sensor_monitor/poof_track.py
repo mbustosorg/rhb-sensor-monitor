@@ -13,10 +13,15 @@
 """
 
 import datetime
+import logging
+
 import pandas as pd
 from collections import deque
 
 PRESSURE_QUEUE_LEN = 10000
+INSTANT_PRESSURE = 20
+
+logger = logging.getLogger(__file__)
 
 
 class PoofTrack:
@@ -25,6 +30,7 @@ class PoofTrack:
         self.poof_count = 0
         self.poof_time = 0.0
         self.pressure_queue = deque(maxlen=PRESSURE_QUEUE_LEN)
+        self.instant_pressure_queue = deque(maxlen=PRESSURE_QUEUE_LEN)
         self.last_pressure = 0.0
         self.base_pressure = 0
 
@@ -32,11 +38,14 @@ class PoofTrack:
         """ Add 'pressure' observation """
         self.last_pressure = pressure
         self.pressure_queue.appendleft(pressure)
+        self.instant_pressure_queue.appendleft(pressure)
         if len(self.pressure_queue) >= PRESSURE_QUEUE_LEN:
             self.pressure_queue.pop()
+            self.instant_pressure_queue.pop()
         if self.base_pressure == 0 or pressure != self.base_pressure:
-            self.base_pressure = pd.Series(self.pressure_queue).median()
-        if abs(pressure - self.base_pressure) > 300:
+            if not self.poofing():
+                self.base_pressure = pd.Series(self.pressure_queue).median()
+        if (self.base_pressure - pd.Series(self.instant_pressure_queue).median()) > 50:
             if not self.poofing():
                 self.start()
         elif self.poofing():
@@ -50,6 +59,7 @@ class PoofTrack:
         """ Poof start detected """
         self.poof_start = datetime.datetime.now()
         self.poof_count += 1
+        logger.info(f"Start poof {self.poof_count}")
 
     def stop(self):
         """ Poof stop detected """
@@ -59,3 +69,4 @@ class PoofTrack:
                 + (datetime.datetime.now() - self.poof_start).total_seconds()
             )
             self.poof_start = None
+            logger.info(f"Stop poof {self.poof_count}")

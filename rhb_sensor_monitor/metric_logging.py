@@ -23,6 +23,7 @@ class MetricLogging:
         self.last_broadcast = datetime.datetime.now()
         self.last_radio_broadcast = datetime.datetime.now()
         self.last_persist = datetime.datetime.now()
+        self.last_persist_timestamp = datetime.datetime.now()
         self.pressure = None
         self.position = None
         self.imu = None
@@ -42,14 +43,14 @@ class MetricLogging:
         self.pressure = pd.DataFrame(columns=["timestamp", "level"])
         self.position = pd.DataFrame(columns=["timestamp", "lat", "lon", "alt"])
         self.imu = pd.DataFrame(columns=["timestamp", "heading", "speed"])
-        self.temp = pd.DataFrame(columns=["timestamp", "temp_f"])
+        self.temp = pd.DataFrame(columns=["timestamp", "temp_f", "temp_cpu"])
         self.disk = pd.DataFrame(columns=["timestamp", "free"])
 
     def persist(self):
         """ Store off histories periodically """
         if datetime.datetime.now() - self.last_persist > self.persist_period:
             self.last_persist = datetime.datetime.now()
-            timestamp = self.last_persist.strftime("%Y%m%d_%H%M")
+            timestamp = self.last_persist.strftime("%Y%m%d_%H")
             self.position.to_csv(
                 os.path.join(self.location, "positions_" + timestamp + ".csv"),
                 index=False,
@@ -68,7 +69,9 @@ class MetricLogging:
             self.disk.to_csv(
                 os.path.join(self.location, "disk_" + timestamp + ".csv"), index=False
             )
-            self.initialize()
+            if self.last_persist_timestamp != timestamp:
+                self.last_persist_timestamp = timestamp
+                self.initialize()
 
     def time_to_broadcast(self):
         """ Should we broadcast an update? """
