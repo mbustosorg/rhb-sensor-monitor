@@ -24,6 +24,7 @@ bus = smbus.SMBus(1)
 # 				Continuous conversion mode, 128SPS
 
 DATA = [0x84, 0x83]
+DATA = [0x84, 0xC3]
 bus.write_i2c_block_data(0x48, 0x01, DATA)
 time.sleep(0.5)
 
@@ -32,6 +33,7 @@ def read_pressure():
     """ Read pressure sensor from ADC """
     raw_data = bus.read_i2c_block_data(0x48, 0x00, 2)
     raw_adc = raw_data[0] * 256 + raw_data[1]
+    raw_adc_mod = raw_adc
     if raw_adc > 32767:
-        raw_adc -= 65535
-    return raw_adc
+        raw_adc_mod -= 65535
+    return raw_adc_mod

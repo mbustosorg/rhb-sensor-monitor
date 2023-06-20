@@ -57,11 +57,11 @@ logger.addHandler(FILE_HANDLER)
 gps_socket.connect()
 gps_socket.watch()
 
-TEMP_PERIOD = datetime.timedelta(seconds=5 * 60)
+TEMP_PERIOD = datetime.timedelta(seconds=60)
 
 poof_track = pt.PoofTrack()
 metrics = ml.MetricLogging(
-    datetime.timedelta(seconds=10 * 60),
+    datetime.timedelta(seconds=15 * 60),
     datetime.timedelta(seconds=5),
     "/home/pi/development/data",
 )
@@ -87,6 +87,8 @@ def broadcast(endpoint, value):
     display_client.send(built)
     mobile_client.send(built)
     pressure_client.send(built)
+    if "pressure" in endpoint or "temperature" in endpoint:
+        telemetry_1_client.send(built)
 
 
 def pi_temp() -> float:
@@ -127,12 +129,12 @@ def update_position(gps):
 @handle_exception
 def update_pressure():
     """ Broadcast the current accumulator pressure """
-    pressure = pressure_sensor.read_pressure()
+    pressure = poof_track.pressure_from_raw(pressure_sensor.read_pressure())
+    broadcast("/pressure", float(round(float(poof_track.last_pressure))))
     poof_track.add_observation(pressure)
     if metrics.pressure.empty or poof_track.poofing():
         piglow.red(64)
         piglow.show()
-        broadcast("/pressure", float(pressure))
         metrics.pressure = pd.concat(
             [
                 metrics.pressure,
@@ -141,7 +143,7 @@ def update_pressure():
                 ),
             ]
         )
-        broadcast("/poof_count", float(poof_track.poof_count))
+        #broadcast("/poof_count", float(poof_track.poof_count))
         #logger.info(f"Pressure = {pressure}")
     elif not poof_track.poofing():
         piglow.red(0)
@@ -152,8 +154,8 @@ def update_pressure():
 def update_imu():
     """ Broadcast the current IMU state """
     updated_imu_state = IMU_state()
-    heading = float(updated_imu_state["heading"]["tiltCompensatedHeading"])
-    if metrics.imu.empty or (abs(heading - metrics.imu["heading"].iloc[-1]) > 1):
+    heading = float(round(float(updated_imu_state["heading"]["tiltCompensatedHeading"])))
+    if metrics.imu.empty or (abs(heading - metrics.imu["heading"].iloc[-1]) > 1.5):
         broadcast("/imu", json.dumps(updated_imu_state))
         broadcast("/heading", heading)
         metrics.imu = pd.concat(
@@ -221,9 +223,9 @@ def broadcast_last():
             broadcast("/position/lon", float(metrics.position["lon"].iloc[-1]))
         if metrics.imu.shape[0] > 0:
             broadcast("/heading", float(metrics.imu["heading"].iloc[-1]))
-        broadcast("/pressure", float(poof_track.last_pressure))
+        broadcast("/pressure", float(round(float(poof_track.last_pressure))))
         if metrics.temp.shape[0] > 0:
-            broadcast("/temperature", float(metrics.temp["temp_f"].iloc[-1]))
+            broadcast("/temperature", float(int(metrics.temp["temp_f"].iloc[-1])))
             broadcast("/temperature_cpu", float(metrics.temp["temp_cpu"].iloc[-1]))
         if metrics.disk.shape[0] > 0:
             broadcast("/free_disk", float(metrics.disk["free"].iloc[-1]))
@@ -252,6 +254,15 @@ if __name__ == "__main__":
         help="The port the pressure osc server is listening on",
     )
     parser.add_argument(
+        "--telemetry_1_ip", default="192.168.1.8", help="The ip of the first telemetry server"
+    )
+    parser.add_argument(
+        "--telemetry_1_port",
+        type=int,
+        default=8888,
+        help="The port the first telemetry server is listening on",
+    )
+    parser.add_argument(
         "--mobile_ip", default="192.168.1.5", help="The ip of the mobile osc display"
     )
     parser.add_argument(
@@ -265,6 +276,7 @@ if __name__ == "__main__":
     display_client = udp_client.UDPClient(args.display_ip, args.display_port)
     pressure_client = udp_client.UDPClient(args.pressure_ip, args.pressure_port)
     mobile_client = udp_client.UDPClient(args.mobile_ip, args.mobile_port)
+    telemetry_1_client = udp_client.UDPClient(args.telemetry_1_ip, args.telemetry_1_port)
     watchdog_led = False
     hour = -1
     while True:

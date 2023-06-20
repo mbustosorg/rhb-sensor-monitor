@@ -50,7 +50,7 @@ class MetricLogging:
         """ Store off histories periodically """
         if datetime.datetime.now() - self.last_persist > self.persist_period:
             self.last_persist = datetime.datetime.now()
-            timestamp = self.last_persist.strftime("%Y%m%d_%H")
+            timestamp = self.last_persist.strftime("%Y%m%d_%H_%M")
             self.position.to_csv(
                 os.path.join(self.location, "positions_" + timestamp + ".csv"),
                 index=False,

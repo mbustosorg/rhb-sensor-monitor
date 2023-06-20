@@ -19,7 +19,7 @@ import pandas as pd
 from collections import deque
 
 PRESSURE_QUEUE_LEN = 10000
-INSTANT_PRESSURE = 20
+INSTANT_PRESSURE_QUEUE_LEN = 20
 
 logger = logging.getLogger(__file__)
 
@@ -30,9 +30,14 @@ class PoofTrack:
         self.poof_count = 0
         self.poof_time = 0.0
         self.pressure_queue = deque(maxlen=PRESSURE_QUEUE_LEN)
-        self.instant_pressure_queue = deque(maxlen=PRESSURE_QUEUE_LEN)
+        self.instant_pressure_queue = deque(maxlen=INSTANT_PRESSURE_QUEUE_LEN)
         self.last_pressure = 0.0
         self.base_pressure = 0
+
+    @staticmethod
+    def pressure_from_raw(raw_pressure) -> float:
+        """Compute from raw"""
+        return max(float(raw_pressure) * 10.0 / 2000.0 + 10, 0.0)
 
     def add_observation(self, pressure):
         """ Add 'pressure' observation """
@@ -41,11 +46,12 @@ class PoofTrack:
         self.instant_pressure_queue.appendleft(pressure)
         if len(self.pressure_queue) >= PRESSURE_QUEUE_LEN:
             self.pressure_queue.pop()
+        if len(self.instant_pressure_queue) >= INSTANT_PRESSURE_QUEUE_LEN:
             self.instant_pressure_queue.pop()
         if self.base_pressure == 0 or pressure != self.base_pressure:
             if not self.poofing():
                 self.base_pressure = pd.Series(self.pressure_queue).median()
-        if (self.base_pressure - pd.Series(self.instant_pressure_queue).median()) > 50:
+        if (self.base_pressure - pd.Series(self.instant_pressure_queue).median()) > 3:
             if not self.poofing():
                 self.start()
         elif self.poofing():
