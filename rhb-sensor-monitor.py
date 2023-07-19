@@ -87,7 +87,8 @@ def broadcast(endpoint, value):
     display_client.send(built)
     mobile_client.send(built)
     pressure_client.send(built)
-    if "pressure" in endpoint or "temperature" in endpoint:
+    if "pressure" in endpoint:
+        water_heater_client.send(built)
         telemetry_1_client.send(built)
 
 
@@ -271,12 +272,22 @@ if __name__ == "__main__":
         default=8888,
         help="The port the mobile osc display is listening on",
     )
+    parser.add_argument(
+        "--water_heater_ip", default="192.168.1.9", help="The ip of the water heater controller"
+    )
+    parser.add_argument(
+        "--water_heater_port",
+        type=int,
+        default=8888,
+        help="The port the water heater controller display is listening on",
+    )
     args = parser.parse_args()
 
     display_client = udp_client.UDPClient(args.display_ip, args.display_port)
     pressure_client = udp_client.UDPClient(args.pressure_ip, args.pressure_port)
     mobile_client = udp_client.UDPClient(args.mobile_ip, args.mobile_port)
     telemetry_1_client = udp_client.UDPClient(args.telemetry_1_ip, args.telemetry_1_port)
+    water_heater_client = udp_client.UDPClient(args.water_heater_ip, args.water_heater_port)
     watchdog_led = False
     hour = -1
     while True:
