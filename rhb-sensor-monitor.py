@@ -13,6 +13,7 @@
 """
 
 import argparse
+import asyncio
 import datetime
 import json
 import logging
@@ -23,6 +24,8 @@ import shutil
 import pandas as pd
 import piglow
 from gps3 import gps3
+from pythonosc.osc_server import AsyncIOOSCUDPServer
+from pythonosc.dispatcher import Dispatcher
 from pythonosc import osc_message_builder
 from pythonosc import udp_client
 from digi.xbee.devices import XBeeDevice, RemoteXBeeDevice, XBee64BitAddress
@@ -58,6 +61,8 @@ gps_socket.connect()
 gps_socket.watch()
 
 TEMP_PERIOD = datetime.timedelta(seconds=60)
+PRESSURE_PERIOD = datetime.timedelta(seconds=1)
+last_pressure_timestamp = datetime.datetime.now()
 
 poof_track = pt.PoofTrack()
 metrics = ml.MetricLogging(
@@ -84,12 +89,7 @@ def broadcast(endpoint, value):
     msg = osc_message_builder.OscMessageBuilder(address=endpoint)
     msg.add_arg(value)
     built = msg.build()
-    display_client.send(built)
-    mobile_client.send(built)
-    pressure_client.send(built)
-    if "pressure" in endpoint:
-        water_heater_client.send(built)
-        telemetry_1_client.send(built)
+    list(map(lambda x: x.send(built), osc_clients))
 
 
 def pi_temp() -> float:
@@ -130,8 +130,12 @@ def update_position(gps):
 @handle_exception
 def update_pressure():
     """ Broadcast the current accumulator pressure """
+    global last_pressure_timestamp
+    update = (datetime.datetime.now() - last_pressure_timestamp) > PRESSURE_PERIOD
     pressure = poof_track.pressure_from_raw(pressure_sensor.read_pressure())
-    broadcast("/pressure", float(round(float(poof_track.last_pressure))))
+    if metrics.temp.empty or update or int(round(pressure)) != int(round(float(poof_track.last_pressure))):
+        broadcast("/pressure", float(round(float(poof_track.last_pressure))))
+        last_pressure_timestamp = datetime.datetime.now()
     poof_track.add_observation(pressure)
     if metrics.pressure.empty or poof_track.poofing():
         piglow.red(64)
@@ -171,24 +175,27 @@ def update_imu():
 
 
 @handle_exception
-def update_temperature():
+def update_temperature(new_value=None):
     """ Broadcast the current temperature """
     if not metrics.temp.empty:
         last_timestamp = datetime.datetime.strptime(
             metrics.temp["timestamp"].iloc[-1], "%Y-%m-%dT%H:%M:%S.%f"
         )
-    if metrics.temp.empty or (datetime.datetime.now() - last_timestamp > TEMP_PERIOD):
+    #if metrics.temp.empty or (datetime.datetime.now() - last_timestamp > TEMP_PERIOD):
+    if not new_value:
         updated_temp = temperature_sensor.current_temp()
-        broadcast("/temperature", float(int(updated_temp[1])))
-        metrics.temp = pd.concat(
-            [
-                metrics.temp,
-                pd.DataFrame.from_records(
-                    [{"timestamp": metrics.now_string(), "temp_f": updated_temp[1], "temp_cpu": pi_temp()}]
-                ),
-            ]
-        )
-        logger.info(f"Temperature = {updated_temp[1]}")
+    else:
+        updated_temp = new_value
+    broadcast("/temperature", float(int(updated_temp[1])))
+    metrics.temp = pd.concat(
+        [
+            metrics.temp,
+            pd.DataFrame.from_records(
+                [{"timestamp": metrics.now_string(), "temp_f": updated_temp[1], "temp_cpu": pi_temp()}]
+            ),
+        ]
+    )
+    logger.info(f"Temperature = {updated_temp[1]}")
 
 
 @handle_exception
@@ -225,69 +232,17 @@ def broadcast_last():
         if metrics.imu.shape[0] > 0:
             broadcast("/heading", float(metrics.imu["heading"].iloc[-1]))
         broadcast("/pressure", float(round(float(poof_track.last_pressure))))
-        if metrics.temp.shape[0] > 0:
-            broadcast("/temperature", float(int(metrics.temp["temp_f"].iloc[-1])))
-            broadcast("/temperature_cpu", float(metrics.temp["temp_cpu"].iloc[-1]))
+        #if metrics.temp.shape[0] > 0:
+        #    broadcast("/temperature", float(int(metrics.temp["temp_f"].iloc[-1])))
+        #    broadcast("/temperature_cpu", float(metrics.temp["temp_cpu"].iloc[-1]))
         if metrics.disk.shape[0] > 0:
             broadcast("/free_disk", float(metrics.disk["free"].iloc[-1]))
         broadcast("/poof_count", float(poof_track.poof_count))
         broadcast("/poof_seconds", float(poof_track.poof_time))
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--display_ip", default="127.0.0.1", help="The ip of the display osc server"
-    )
-    parser.add_argument(
-        "--display_port",
-        type=int,
-        default=10002,
-        help="The port the display osc server is listening on",
-    )
-    parser.add_argument(
-        "--pressure_ip", default="192.168.1.4", help="The ip of the dial server"
-    )
-    parser.add_argument(
-        "--pressure_port",
-        type=int,
-        default=8888,
-        help="The port the pressure osc server is listening on",
-    )
-    parser.add_argument(
-        "--telemetry_1_ip", default="192.168.1.8", help="The ip of the first telemetry server"
-    )
-    parser.add_argument(
-        "--telemetry_1_port",
-        type=int,
-        default=8888,
-        help="The port the first telemetry server is listening on",
-    )
-    parser.add_argument(
-        "--mobile_ip", default="192.168.1.5", help="The ip of the mobile osc display"
-    )
-    parser.add_argument(
-        "--mobile_port",
-        type=int,
-        default=8888,
-        help="The port the mobile osc display is listening on",
-    )
-    parser.add_argument(
-        "--water_heater_ip", default="192.168.1.9", help="The ip of the water heater controller"
-    )
-    parser.add_argument(
-        "--water_heater_port",
-        type=int,
-        default=8888,
-        help="The port the water heater controller display is listening on",
-    )
-    args = parser.parse_args()
-
-    display_client = udp_client.UDPClient(args.display_ip, args.display_port)
-    pressure_client = udp_client.UDPClient(args.pressure_ip, args.pressure_port)
-    mobile_client = udp_client.UDPClient(args.mobile_ip, args.mobile_port)
-    telemetry_1_client = udp_client.UDPClient(args.telemetry_1_ip, args.telemetry_1_port)
-    water_heater_client = udp_client.UDPClient(args.water_heater_ip, args.water_heater_port)
+async def main_loop():
+    """Main processing loop for monitors"""
     watchdog_led = False
     hour = -1
     while True:
@@ -295,7 +250,7 @@ if __name__ == "__main__":
             metrics.persist()
             update_pressure()
             update_imu()
-            update_temperature()
+            #update_temperature()
             update_disk_usage()
             new_data = gps_socket.next()
             if new_data:
@@ -314,5 +269,62 @@ if __name__ == "__main__":
                     piglow.blue(0)
                 watchdog_led = not watchdog_led
             broadcast_last()
+            await asyncio.sleep(0.05)
         except Exception as exception:
             logger.error(exception)
+
+
+def handle_osc(address, *args):
+    """Handle any incoming OSC messages"""
+    if "/temperature" in address:
+        update_temperature((0, float(args[0])))
+        return
+    if "/water_heater" in address or \
+        "/upper_temp" in address or \
+        "/lower_temp" in address:
+        broadcast(address, args[0])
+        return
+
+
+async def init_main():
+    """Coordinate ASYNC server and main_loop processing"""
+    dispatcher = Dispatcher()
+    dispatcher.map("/temperature", handle_osc)
+    dispatcher.map("/water_heater", handle_osc)
+    dispatcher.map("/lower_temp", handle_osc)
+    dispatcher.map("/upper_temp", handle_osc)
+    server = AsyncIOOSCUDPServer(("192.168.1.3", 8888), dispatcher, asyncio.get_event_loop())
+    transport, protocol = await server.create_serve_endpoint()
+
+    await main_loop()
+
+    transport.close()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--display_ip", default="127.0.0.1", help="The ip of the display osc server"
+    )
+    parser.add_argument(
+        "--display_port",
+        type=int,
+        default=10002,
+        help="The port the display osc server is listening on",
+    )
+    parser.add_argument(
+        "--client_ip", default="192.168.1.4,192.168.1.5,192.168.1.8,192.168.1.9", help="The ips of the data clients"
+    )
+    parser.add_argument(
+        "--client_port",
+        type=int,
+        default=8888,
+        help="The port osc clients are listening on",
+    )
+    args = parser.parse_args()
+
+    display_client = udp_client.UDPClient(args.display_ip, args.display_port)
+    osc_clients = list(map(lambda x: udp_client.UDPClient(x, args.client_port), args.client_ip.split(",")))
+    osc_clients = osc_clients + [display_client]
+
+    asyncio.run(init_main())

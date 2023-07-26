@@ -225,7 +225,7 @@ Driver<y:LabelModel><y:SmartNodeLabelModel distance="4.0"/></y:LabelModel><y:Mod
               <y:Geometry height="135.5325532134434" width="259.0" x="466.0" y="429.833984375"/>
               <y:Fill color="#F5F5F5" transparent="false"/>
               <y:BorderStyle color="#000000" type="dashed" width="1.0"/>
-              <y:NodeLabel alignment="right" autoSizePolicy="node_width" backgroundColor="#EBEBEB" borderDistance="0.0" fontFamily="Dialog" fontSize="15" fontStyle="plain" hasLineColor="false" height="21.666015625" horizontalTextPosition="center" iconTextGap="4" modelName="internal" modelPosition="t" textColor="#000000" verticalTextPosition="bottom" visible="true" width="259.0" x="0.0" xml:space="preserve" y="0.0">Mobile (192.168.1.5:8888)</y:NodeLabel>
+              <y:NodeLabel alignment="right" autoSizePolicy="node_width" backgroundColor="#EBEBEB" borderDistance="0.0" fontFamily="Dialog" fontSize="15" fontStyle="plain" hasLineColor="false" height="21.666015625" horizontalTextPosition="center" iconTextGap="4" modelName="internal" modelPosition="t" textColor="#000000" verticalTextPosition="bottom" visible="true" width="259.0" x="0.0" xml:space="preserve" y="0.0">Mobile (192.168.1.5/10:8888)</y:NodeLabel>
               <y:Shape type="roundrectangle"/>
               <y:State closed="false" closedHeight="50.0" closedWidth="50.0" innerGraphDisplayEnabled="false"/>
               <y:Insets bottom="15" bottomF="15.0" left="15" leftF="15.0" right="15" rightF="15.0" top="15" topF="15.0"/>
