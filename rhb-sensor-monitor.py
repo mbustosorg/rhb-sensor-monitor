@@ -30,6 +30,8 @@ from pythonosc import osc_message_builder
 from pythonosc import udp_client
 from digi.xbee.devices import XBeeDevice, RemoteXBeeDevice, XBee64BitAddress
 
+import rhb_sensor_monitor.alternating_sensor as AS
+
 XBEE_COORDINATOR = "0013A20041CB4F87"
 XBEE_ROUTER = "0013A20041CB7786"
 radio = XBeeDevice("/dev/ttyUSB0", 9600)
@@ -49,7 +51,7 @@ data_stream = gps3.DataStream()
 
 FORMAT = "%(asctime)-15s|%(module)s|%(lineno)d|%(message)s"
 logging.basicConfig(format=FORMAT)
-logger = logging.getLogger(__file__)
+logger = logging.getLogger("rhb-sensor-monitor")
 logger.setLevel(logging.INFO)
 
 FILE_HANDLER = RotatingFileHandler("rhb-sensor-monitor.log", maxBytes=40000, backupCount=5)
@@ -71,6 +73,9 @@ metrics = ml.MetricLogging(
     "/home/pi/development/data",
 )
 
+oil_pressure_sensor = AS.AlternatingSensor(29, "oil_pressure", 1000)
+speedometer_sensor = AS.AlternatingSensor(31, "speodometer", 1000)
+
 
 def handle_exception(func):
     """ Handle exception when interacting with peripherals """
@@ -89,7 +94,11 @@ def broadcast(endpoint, value):
     msg = osc_message_builder.OscMessageBuilder(address=endpoint)
     msg.add_arg(value)
     built = msg.build()
-    list(map(lambda x: x.send(built), osc_clients))
+    try:
+        for client in osc_clients:
+            client.send(built)
+    except Exception as e:
+        print(e)
 
 
 def pi_temp() -> float:
@@ -133,10 +142,11 @@ def update_pressure():
     global last_pressure_timestamp
     update = (datetime.datetime.now() - last_pressure_timestamp) > PRESSURE_PERIOD
     pressure = poof_track.pressure_from_raw(pressure_sensor.read_pressure())
-    if metrics.temp.empty or update or int(round(pressure)) != int(round(float(poof_track.last_pressure))):
+    if metrics.temp.empty or update or pressure != poof_track.last_pressure:
         broadcast("/pressure", float(round(float(poof_track.last_pressure))))
+        broadcast("/pressure_fine", poof_track.last_pressure)
         last_pressure_timestamp = datetime.datetime.now()
-    poof_track.add_observation(pressure)
+        poof_track.add_observation(pressure)
     if metrics.pressure.empty or poof_track.poofing():
         piglow.red(64)
         piglow.show()
@@ -148,11 +158,29 @@ def update_pressure():
                 ),
             ]
         )
-        #broadcast("/poof_count", float(poof_track.poof_count))
-        #logger.info(f"Pressure = {pressure}")
     elif not poof_track.poofing():
         piglow.red(0)
         piglow.show()
+
+
+def cardinal_from_heading(heading) -> str:
+    """Cardinal direction from heading value"""
+    if heading >= 337.5 or heading < 22.5:
+        return "N"
+    if 22.5 <= heading < 67.5:
+        return "NE"
+    if 67.5 <= heading < 112.5:
+        return "E"
+    if 112.5 <= heading < 157.5:
+        return "SE"
+    if 157.5 <= heading < 202.5:
+        return "S"
+    if 202.5 <= heading < 247.5:
+        return "SW"
+    if 247.5 <= heading < 292.5:
+        return "W"
+    if 292.5 <= heading < 337.5:
+        return "NW"
 
 
 @handle_exception
@@ -163,6 +191,7 @@ def update_imu():
     if metrics.imu.empty or (abs(heading - metrics.imu["heading"].iloc[-1]) > 1.5):
         broadcast("/imu", json.dumps(updated_imu_state))
         broadcast("/heading", heading)
+        broadcast("/cardinal", cardinal_from_heading(heading))
         metrics.imu = pd.concat(
             [
                 metrics.imu,
@@ -231,14 +260,37 @@ def broadcast_last():
             broadcast("/position/lon", float(metrics.position["lon"].iloc[-1]))
         if metrics.imu.shape[0] > 0:
             broadcast("/heading", float(metrics.imu["heading"].iloc[-1]))
+            broadcast("/cardinal", cardinal_from_heading(float(metrics.imu["heading"].iloc[-1])))
         broadcast("/pressure", float(round(float(poof_track.last_pressure))))
         #if metrics.temp.shape[0] > 0:
         #    broadcast("/temperature", float(int(metrics.temp["temp_f"].iloc[-1])))
         #    broadcast("/temperature_cpu", float(metrics.temp["temp_cpu"].iloc[-1]))
-        if metrics.disk.shape[0] > 0:
-            broadcast("/free_disk", float(metrics.disk["free"].iloc[-1]))
+        #if metrics.disk.shape[0] > 0:
+        #    broadcast("/free_disk", float(metrics.disk["free"].iloc[-1]))
         broadcast("/poof_count", float(poof_track.poof_count))
-        broadcast("/poof_seconds", float(poof_track.poof_time))
+        #broadcast("/poof_seconds", float(poof_track.poof_time))
+        broadcast("/engine", float(oil_pressure_sensor.sample()))
+        broadcast("/moving", oil_pressure_sensor.active())
+
+
+@handle_exception
+def update_oil_pressure():
+    """Check on oil_pressure"""
+    new_value = oil_pressure_sensor.sample()
+    if oil_pressure_sensor.should_broadcast(new_value):
+        broadcast("/engine", float(new_value))
+
+
+@handle_exception
+def update_speedometer():
+    """Check on speedometer"""
+    new_value = speedometer_sensor.active()
+    if speedometer_sensor.should_broadcast(new_value):
+        if new_value:
+            print("moving")
+        else:
+            print("stopped")
+        broadcast("/moving", float(new_value))
 
 
 async def main_loop():
@@ -249,9 +301,11 @@ async def main_loop():
         try:
             metrics.persist()
             update_pressure()
+            update_oil_pressure()
+            update_speedometer()
             update_imu()
             #update_temperature()
-            update_disk_usage()
+            #update_disk_usage()
             new_data = gps_socket.next()
             if new_data:
                 data_stream.unpack(new_data)
@@ -313,7 +367,7 @@ if __name__ == "__main__":
         help="The port the display osc server is listening on",
     )
     parser.add_argument(
-        "--client_ip", default="192.168.1.4,192.168.1.5,192.168.1.8,192.168.1.9", help="The ips of the data clients"
+        "--client_ip", default="192.168.1.4,192.168.1.5,192.168.1.8,192.168.1.9,192.168.1.10,192.168.1.11", help="The ips of the data clients"
     )
     parser.add_argument(
         "--client_port",
@@ -323,8 +377,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    display_client = udp_client.UDPClient(args.display_ip, args.display_port)
     osc_clients = list(map(lambda x: udp_client.UDPClient(x, args.client_port), args.client_ip.split(",")))
-    osc_clients = osc_clients + [display_client]
+    osc_clients = osc_clients + [udp_client.UDPClient(args.display_ip, args.display_port)]
 
     asyncio.run(init_main())

@@ -19,9 +19,9 @@ import pandas as pd
 from collections import deque
 
 PRESSURE_QUEUE_LEN = 10000
-INSTANT_PRESSURE_QUEUE_LEN = 20
+INSTANT_PRESSURE_QUEUE_LEN = 40
 
-logger = logging.getLogger(__file__)
+logger = logging.getLogger("rhb-sensor-monitor")
 
 
 class PoofTrack:
@@ -36,26 +36,32 @@ class PoofTrack:
 
     @staticmethod
     def pressure_from_raw(raw_pressure) -> float:
-        """Compute from raw"""
-        return max(float(raw_pressure) * 10.0 / 2000.0 + 10, 0.0)
+        """Compute from raw rounded to 0.1"""
+        observation = max(float(raw_pressure) * 10.0 / 2000.0 + 10, 0.0)
+        observation = float(int(observation * 10.0)) / 10.0
+        return observation
 
     def add_observation(self, pressure):
         """ Add 'pressure' observation """
-        self.last_pressure = pressure
-        self.pressure_queue.appendleft(pressure)
-        self.instant_pressure_queue.appendleft(pressure)
+        self.last_pressure = int(pressure)
+        self.pressure_queue.appendleft(self.last_pressure)
+        self.instant_pressure_queue.appendleft(self.last_pressure)
         if len(self.pressure_queue) >= PRESSURE_QUEUE_LEN:
             self.pressure_queue.pop()
         if len(self.instant_pressure_queue) >= INSTANT_PRESSURE_QUEUE_LEN:
             self.instant_pressure_queue.pop()
-        if self.base_pressure == 0 or pressure != self.base_pressure:
-            if not self.poofing():
+        if not self.poofing():
+            if self.base_pressure != pd.Series(self.pressure_queue).median():
                 self.base_pressure = pd.Series(self.pressure_queue).median()
-        if (self.base_pressure - pd.Series(self.instant_pressure_queue).median()) > 3:
+                logger.info(f"base_pressure set to {self.base_pressure}")
+        if abs(self.last_pressure - self.base_pressure) > 3:
             if not self.poofing():
                 self.start()
+                logger.info(f"PoofStart --> Count: {self.poof_count}, last_pressure: {self.last_pressure}, base_pressure: {self.base_pressure}")
         elif self.poofing():
-            self.stop()
+            if self.last_pressure <= self.base_pressure:
+                self.stop()
+                logger.info(f"PoofStop --> Count: {self.poof_count}, last_pressure: {self.last_pressure}, base_pressure: {self.base_pressure}")
 
     def poofing(self):
         """ Are we poofing? """
@@ -65,7 +71,6 @@ class PoofTrack:
         """ Poof start detected """
         self.poof_start = datetime.datetime.now()
         self.poof_count += 1
-        logger.info(f"Start poof {self.poof_count}")
 
     def stop(self):
         """ Poof stop detected """
@@ -75,4 +80,3 @@ class PoofTrack:
                 + (datetime.datetime.now() - self.poof_start).total_seconds()
             )
             self.poof_start = None
-            logger.info(f"Stop poof {self.poof_count}")
