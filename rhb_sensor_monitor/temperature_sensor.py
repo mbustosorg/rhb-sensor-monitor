@@ -15,23 +15,29 @@
 import glob
 
 BASE_DIR = "/sys/bus/w1/devices/"
-DEVICE_FOLDER = glob.glob(BASE_DIR + "28*")[0]
-DEVICE_FILE = DEVICE_FOLDER + "/w1_slave"
+try:
+    DEVICE_FOLDER = glob.glob(BASE_DIR + "28*")[0]
+    DEVICE_FILE = DEVICE_FOLDER + "/w1_slave"
+except:
+    DEVICE_FOLDER = None
 
 
 def raw_temp():
     """ Read current temp from sensor """
-    with open(DEVICE_FILE, "r") as file:
-        lines = file.readlines()
-    return lines
+    if DEVICE_FOLDER:
+        with open(DEVICE_FILE, "r") as file:
+            lines = file.readlines()
+        return lines
+    return None
 
 
 def current_temp():
     """ Current temperature """
     lines = raw_temp()
-    if lines[0].replace("\n", "")[-3:] == "YES":
-        temp_string = lines[1].replace("\n", "").split("=")[1]
-        temp_c = float(temp_string) / 1000.0
-        temp_f = temp_c * 9.0 / 5.0 + 32.0
-        return temp_c, temp_f
+    if lines:
+        if lines[0].replace("\n", "")[-3:] == "YES":
+            temp_string = lines[1].replace("\n", "").split("=")[1]
+            temp_c = float(temp_string) / 1000.0
+            temp_f = temp_c * 9.0 / 5.0 + 32.0
+            return temp_c, temp_f
     return 0.0, 0.0

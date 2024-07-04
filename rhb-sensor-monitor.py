@@ -74,7 +74,7 @@ metrics = ml.MetricLogging(
 )
 
 oil_pressure_sensor = AS.AlternatingSensor(29, "oil_pressure", 1000)
-speedometer_sensor = AS.AlternatingSensor(31, "speodometer", 1000)
+speedometer_sensor = AS.AlternatingSensor(31, "speedometer", 1000)
 
 
 def handle_exception(func):
