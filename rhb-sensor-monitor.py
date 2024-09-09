@@ -73,8 +73,8 @@ metrics = ml.MetricLogging(
     "/home/pi/development/data",
 )
 
-oil_pressure_sensor = AS.AlternatingSensor(29, "oil_pressure", 1000)
-speedometer_sensor = AS.AlternatingSensor(31, "speedometer", 1000)
+#oil_pressure_sensor = AS.AlternatingSensor(29, "oil_pressure", 1000)
+#speedometer_sensor = AS.AlternatingSensor(31, "speedometer", 1000)
 
 
 def handle_exception(func):
@@ -269,8 +269,8 @@ def broadcast_last():
         #    broadcast("/free_disk", float(metrics.disk["free"].iloc[-1]))
         broadcast("/poof_count", float(poof_track.poof_count))
         #broadcast("/poof_seconds", float(poof_track.poof_time))
-        broadcast("/engine", float(oil_pressure_sensor.sample()))
-        broadcast("/moving", oil_pressure_sensor.active())
+        #broadcast("/engine", float(oil_pressure_sensor.sample()))
+        #broadcast("/moving", float(oil_pressure_sensor.active()))
 
 
 @handle_exception
@@ -301,8 +301,8 @@ async def main_loop():
         try:
             metrics.persist()
             update_pressure()
-            update_oil_pressure()
-            update_speedometer()
+            #update_oil_pressure()
+            #update_speedometer()
             update_imu()
             #update_temperature()
             #update_disk_usage()
@@ -335,7 +335,8 @@ def handle_osc(address, *args):
         return
     if "/water_heater" in address or \
         "/upper_temp" in address or \
-        "/lower_temp" in address:
+        "/lower_temp" in address or \
+        "/light" in address:
         broadcast(address, args[0])
         return
 
