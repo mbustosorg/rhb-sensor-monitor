@@ -17,6 +17,7 @@ import asyncio
 import datetime
 import json
 import logging
+from logging import Logger
 from logging.handlers import RotatingFileHandler
 import os
 import shutil
@@ -29,6 +30,7 @@ from pythonosc.dispatcher import Dispatcher
 from pythonosc import osc_message_builder
 from pythonosc import udp_client
 from digi.xbee.devices import XBeeDevice, RemoteXBeeDevice, XBee64BitAddress
+import geopy.distance
 
 import rhb_sensor_monitor.alternating_sensor as AS
 
@@ -49,15 +51,21 @@ from rhb_sensor_monitor.imu.berryIMU import IMU_state
 gps_socket = gps3.GPSDSocket()
 data_stream = gps3.DataStream()
 
+FORMAT = "%(asctime)-15s %(message)s"
+logging.basicConfig(format=FORMAT)
+LOGGER: Logger = logging.getLogger("rhb-sensor-monitor")
+LOGGER.setLevel(logging.INFO)
+LOG_FORMAT = logging.Formatter(FORMAT)
+
+FILE_HANDLER = RotatingFileHandler("rhb-sensor-monitor.log", maxBytes=200000, backupCount=5)
+FILE_HANDLER.setLevel(logging.INFO)
+FILE_HANDLER.setFormatter(LOG_FORMAT)
+LOGGER.addHandler(FILE_HANDLER)
+
 FORMAT = "%(asctime)-15s|%(module)s|%(lineno)d|%(message)s"
 logging.basicConfig(format=FORMAT)
-logger = logging.getLogger("rhb-sensor-monitor")
+logger = logging.getLogger(__file__)
 logger.setLevel(logging.INFO)
-
-FILE_HANDLER = RotatingFileHandler("rhb-sensor-monitor.log", maxBytes=40000, backupCount=5)
-FILE_HANDLER.setLevel(logging.INFO)
-FILE_HANDLER.setFormatter(FORMAT)
-logger.addHandler(FILE_HANDLER)
 
 gps_socket.connect()
 gps_socket.watch()
@@ -120,20 +128,32 @@ def update_position(gps):
             or (abs(lat - metrics.position["lat"].iloc[-1]) > 0.00005)
             or (abs(alt - metrics.position["alt"].iloc[-1]) > 5.0)
         ):
+            if not metrics.position.empty:
+                coords_1 = (metrics.position["lat"].iloc[-1], metrics.position["lon"].iloc[-1])
+                coords_2 = (lat, lon)
+                distance = geopy.distance.geodesic(coords_1, coords_2).mi
+                timestamp_diff = datetime.datetime.now() - datetime.datetime.strptime(metrics.position["timestamp"].iloc[-1], "%Y-%m-%dT%H:%M:%S.%f")
+                inferred_speed = distance / timestamp_diff.seconds * 3600
+            else:
+                inferred_speed = 0.0
+
             broadcast("/position/lat", lat)
             broadcast("/position/lon", lon)
             broadcast("/position/alt", alt)
+            broadcast("/position/inferred_speed", inferred_speed)
+
             metrics.position = pd.concat(
                 [
                     metrics.position,
                     pd.DataFrame.from_records(
-                        [{"timestamp": metrics.now_string(), "lat": lat, "lon": lon, "alt": alt}]
+                        [{"timestamp": metrics.now_string(), "lat": lat, "lon": lon, "alt": alt, "speed": inferred_speed}]
                     ),
                 ]
             )
             logger.info(fr"Latitude = {data_stream.TPV['lat']}")
             logger.info(fr"Longitude = {data_stream.TPV['lon']}")
             logger.info(fr"Altitude = {data_stream.TPV['alt']}")
+            logger.info(fr"Speed = {inferred_speed}")
 
 
 @handle_exception
@@ -341,14 +361,14 @@ def handle_osc(address, *args):
         return
 
 
-async def init_main():
+async def init_main(monitor_ip):
     """Coordinate ASYNC server and main_loop processing"""
     dispatcher = Dispatcher()
     dispatcher.map("/temperature", handle_osc)
     dispatcher.map("/water_heater", handle_osc)
     dispatcher.map("/lower_temp", handle_osc)
     dispatcher.map("/upper_temp", handle_osc)
-    server = AsyncIOOSCUDPServer(("192.168.1.3", 8888), dispatcher, asyncio.get_event_loop())
+    server = AsyncIOOSCUDPServer((monitor_ip, 8888), dispatcher, asyncio.get_event_loop())
     transport, protocol = await server.create_serve_endpoint()
 
     await main_loop()
@@ -359,6 +379,9 @@ async def init_main():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--ip", default="192.168.1.3", help="The ip of the monitor"
+    )
+    parser.add_argument(
         "--display_ip", default="127.0.0.1", help="The ip of the display osc server"
     )
     parser.add_argument(
@@ -368,7 +391,7 @@ if __name__ == "__main__":
         help="The port the display osc server is listening on",
     )
     parser.add_argument(
-        "--client_ip", default="192.168.1.4,192.168.1.5,192.168.1.8,192.168.1.9,192.168.1.10,192.168.1.11", help="The ips of the data clients"
+        "--client_ip", default="192.168.1.4,192.168.1.5,192.168.1.8,192.168.1.9,192.168.1.10,192.168.1.11", help="The IPs of the data clients"
     )
     parser.add_argument(
         "--client_port",
@@ -381,4 +404,4 @@ if __name__ == "__main__":
     osc_clients = list(map(lambda x: udp_client.UDPClient(x, args.client_port), args.client_ip.split(",")))
     osc_clients = osc_clients + [udp_client.UDPClient(args.display_ip, args.display_port)]
 
-    asyncio.run(init_main())
+    asyncio.run(init_main(args.ip))
