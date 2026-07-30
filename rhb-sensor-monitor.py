@@ -208,7 +208,7 @@ def update_imu():
     """ Broadcast the current IMU state """
     updated_imu_state = IMU_state()
     heading = float(round(float(updated_imu_state["heading"]["tiltCompensatedHeading"])))
-    if metrics.imu.empty or (abs(heading - metrics.imu["heading"].iloc[-1]) > 1.5):
+    if metrics.imu.shape[0] < 5 or (abs(heading - metrics.imu["heading"].iloc[-5:].mean()) > 2.0):
         broadcast("/imu", json.dumps(updated_imu_state))
         broadcast("/heading", heading)
         broadcast("/cardinal", cardinal_from_heading(heading))
