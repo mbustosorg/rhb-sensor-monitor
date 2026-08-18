@@ -42,6 +42,7 @@ base_xbee = RemoteXBeeDevice(radio, XBee64BitAddress.from_hex_string(XBEE_ROUTER
 
 from rhb_sensor_monitor import (
     pressure_sensor,
+    pressure_health as ph,
     poof_track as pt,
     temperature_sensor,
     metric_logging as ml,
@@ -71,10 +72,11 @@ gps_socket.connect()
 gps_socket.watch()
 
 TEMP_PERIOD = datetime.timedelta(seconds=60)
-PRESSURE_PERIOD = datetime.timedelta(seconds=1)
+PRESSURE_PERIOD = datetime.timedelta(seconds=0.5)
 last_pressure_timestamp = datetime.datetime.now()
 
 poof_track = pt.PoofTrack()
+pressure_health = ph.PressureHealth()
 metrics = ml.MetricLogging(
     datetime.timedelta(seconds=15 * 60),
     datetime.timedelta(seconds=5),
@@ -161,7 +163,20 @@ def update_pressure():
     """ Broadcast the current accumulator pressure """
     global last_pressure_timestamp
     update = (datetime.datetime.now() - last_pressure_timestamp) > PRESSURE_PERIOD
-    pressure = poof_track.pressure_from_raw(pressure_sensor.read_pressure())
+    raw_pressure = pressure_sensor.read_pressure()
+    was_connected = pressure_health.connected
+    if not pressure_health.update(raw_pressure):
+        if was_connected and poof_track.poofing():
+            poof_track.stop()
+            piglow.red(0)
+            piglow.show()
+        if update:
+            # Nothing worth tracking or storing, but keep the displays alive
+            broadcast("/pressure", float(round(float(poof_track.last_pressure))))
+            broadcast("/pressure_fine", poof_track.last_pressure)
+            last_pressure_timestamp = datetime.datetime.now()
+        return
+    pressure = poof_track.pressure_from_raw(raw_pressure)
     if metrics.temp.empty or update or pressure != poof_track.last_pressure:
         broadcast("/pressure", float(round(float(poof_track.last_pressure))))
         broadcast("/pressure_fine", poof_track.last_pressure)

@@ -12,9 +12,12 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
+import logging
 import time
 
 import smbus
+
+logger = logging.getLogger("rhb-sensor-monitor")
 
 bus = smbus.SMBus(1)
 
@@ -30,8 +33,12 @@ time.sleep(0.5)
 
 
 def read_pressure():
-    """ Read pressure sensor from ADC """
-    raw_data = bus.read_i2c_block_data(0x48, 0x00, 2)
+    """ Read pressure sensor from ADC, None if the ADC cannot be reached """
+    try:
+        raw_data = bus.read_i2c_block_data(0x48, 0x00, 2)
+    except OSError as exception:
+        logger.error(f"Unable to read the pressure ADC: {exception}")
+        return None
     raw_adc = raw_data[0] * 256 + raw_data[1]
     raw_adc_mod = raw_adc
     if raw_adc > 32767:
