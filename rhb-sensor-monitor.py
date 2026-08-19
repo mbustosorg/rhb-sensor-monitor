@@ -99,15 +99,21 @@ def handle_exception(func):
 
 
 def broadcast(endpoint, value):
-    """ Broadcast `value' """
+    """ Broadcast `value' to every listener
+
+    Each send is isolated.  With one try around the whole loop, the first
+    listener that raised aborted the loop, so every listener after it in
+    osc_clients silently stopped receiving -- and which ones those were
+    depended on nothing more than their position in the list.
+    """
     msg = osc_message_builder.OscMessageBuilder(address=endpoint)
     msg.add_arg(value)
     built = msg.build()
-    try:
-        for client in osc_clients:
+    for label, client in osc_clients:
+        try:
             client.send(built)
-    except Exception as e:
-        print(e)
+        except Exception as exception:
+            logger.error(f"Send of {endpoint} to {label} failed: {exception}")
 
 
 @handle_exception
@@ -421,7 +427,16 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    osc_clients = list(map(lambda x: udp_client.UDPClient(x, args.client_port), args.client_ip.split(",")))
-    osc_clients = osc_clients + [udp_client.UDPClient(args.display_ip, args.display_port)]
+    osc_clients = [
+        (ip, udp_client.UDPClient(ip, args.client_port))
+        for ip in args.client_ip.split(",")
+    ]
+    osc_clients.append(
+        (
+            f"{args.display_ip}:{args.display_port}",
+            udp_client.UDPClient(args.display_ip, args.display_port),
+        )
+    )
+    logger.info(f"Broadcasting to {', '.join(label for label, _ in osc_clients)}")
 
     asyncio.run(init_main(args.ip))
