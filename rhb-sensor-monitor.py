@@ -44,7 +44,6 @@ from rhb_sensor_monitor import (
     pressure_sensor,
     pressure_health as ph,
     poof_track as pt,
-    temperature_sensor,
     metric_logging as ml,
 )
 from rhb_sensor_monitor.imu.berryIMU import IMU_state
@@ -71,12 +70,12 @@ logger.setLevel(logging.INFO)
 gps_socket.connect()
 gps_socket.watch()
 
-TEMP_PERIOD = datetime.timedelta(seconds=60)
 PRESSURE_PERIOD = datetime.timedelta(seconds=0.5)
 last_pressure_timestamp = datetime.datetime.now()
 
 poof_track = pt.PoofTrack()
 pressure_health = ph.PressureHealth()
+water_state = {"/temperature": 0.0, "/water_heater": 0.0}
 metrics = ml.MetricLogging(
     datetime.timedelta(seconds=15 * 60),
     datetime.timedelta(seconds=5),
@@ -109,12 +108,6 @@ def broadcast(endpoint, value):
             client.send(built)
     except Exception as e:
         print(e)
-
-
-def pi_temp() -> float:
-    """Onboard CPU temperature"""
-    temp = os.popen("cat /sys/class/thermal/thermal_zone0/temp").read()
-    return float(int(float(temp) / 1000.0))
 
 
 @handle_exception
@@ -177,7 +170,7 @@ def update_pressure():
             last_pressure_timestamp = datetime.datetime.now()
         return
     pressure = poof_track.pressure_from_raw(raw_pressure)
-    if metrics.temp.empty or update or pressure != poof_track.last_pressure:
+    if update or pressure != poof_track.last_pressure:
         broadcast("/pressure", float(round(float(poof_track.last_pressure))))
         broadcast("/pressure_fine", poof_track.last_pressure)
         last_pressure_timestamp = datetime.datetime.now()
@@ -239,30 +232,6 @@ def update_imu():
 
 
 @handle_exception
-def update_temperature(new_value=None):
-    """ Broadcast the current temperature """
-    if not metrics.temp.empty:
-        last_timestamp = datetime.datetime.strptime(
-            metrics.temp["timestamp"].iloc[-1], "%Y-%m-%dT%H:%M:%S.%f"
-        )
-    #if metrics.temp.empty or (datetime.datetime.now() - last_timestamp > TEMP_PERIOD):
-    if not new_value:
-        updated_temp = temperature_sensor.current_temp()
-    else:
-        updated_temp = new_value
-    broadcast("/temperature", float(int(updated_temp[1])))
-    metrics.temp = pd.concat(
-        [
-            metrics.temp,
-            pd.DataFrame.from_records(
-                [{"timestamp": metrics.now_string(), "temp_f": updated_temp[1], "temp_cpu": pi_temp()}]
-            ),
-        ]
-    )
-    logger.info(f"Temperature = {updated_temp[1]}")
-
-
-@handle_exception
 def update_disk_usage():
     """ Broadcast the current free disk percentage """
     stat = shutil.disk_usage("/")
@@ -297,9 +266,6 @@ def broadcast_last():
             broadcast("/heading", float(metrics.imu["heading"].iloc[-1]))
             broadcast("/cardinal", cardinal_from_heading(float(metrics.imu["heading"].iloc[-1])))
         broadcast("/pressure", float(round(float(poof_track.last_pressure))))
-        #if metrics.temp.shape[0] > 0:
-        #    broadcast("/temperature", float(int(metrics.temp["temp_f"].iloc[-1])))
-        #    broadcast("/temperature_cpu", float(metrics.temp["temp_cpu"].iloc[-1]))
         #if metrics.disk.shape[0] > 0:
         #    broadcast("/free_disk", float(metrics.disk["free"].iloc[-1]))
         broadcast("/poof_count", float(poof_track.poof_count))
@@ -339,7 +305,6 @@ async def main_loop():
             #update_oil_pressure()
             #update_speedometer()
             update_imu()
-            #update_temperature()
             #update_disk_usage()
             new_data = gps_socket.next()
             if new_data:
@@ -363,26 +328,66 @@ async def main_loop():
             logger.error(exception)
 
 
-def handle_osc(address, *args):
-    """Handle any incoming OSC messages"""
-    if "/temperature" in address:
-        update_temperature((0, float(args[0])))
+@handle_exception
+def record_water(address, *args):
+    """Record the water bath state published by rhb-water-heater
+
+    This monitor is the rig's data logger, so it keeps a history of what the
+    water heater reports.  It never re-broadcasts any of it -- rhb-water-heater
+    sends to every listener directly, including the body display on 10002.
+
+    One cycle there sends /temperature, /water_heater and then /water_pressure,
+    so the values are held and the row is written on the last of them.  A lost
+    packet just carries the previous cycle's value into the row.
+    """
+    value = float(args[0])
+    if address != "/water_pressure":
+        water_state[address] = value
         return
-    if "/water_heater" in address or \
-        "/upper_temp" in address or \
-        "/lower_temp" in address or \
-        "/light" in address:
-        broadcast(address, args[0])
-        return
+    metrics.water = pd.concat(
+        [
+            metrics.water,
+            pd.DataFrame.from_records(
+                [
+                    {
+                        "timestamp": metrics.now_string(),
+                        "temp_f": water_state["/temperature"],
+                        "heater_status": water_state["/water_heater"],
+                        "pressure_psi": value,
+                    }
+                ]
+            ),
+        ]
+    )
+    logger.info(
+        f"Water temperature = {water_state['/temperature']}, "
+        f"heater = {water_state['/water_heater']}, pressure = {value}"
+    )
+
+
+def ignore_osc(address, *args):
+    """Accept and drop -- known traffic this monitor has no use for"""
+
+
+def handle_unexpected(address, *args):
+    """Log anything arriving that this monitor has no business receiving"""
+    logger.warning(f"Unhandled OSC message {address} {args}")
 
 
 async def init_main(monitor_ip):
-    """Coordinate ASYNC server and main_loop processing"""
+    """Coordinate ASYNC server and main_loop processing
+
+    This monitor owns the accumulator pressure and publishes it; everything it
+    listens for here is somebody else's data that it only records.
+    """
     dispatcher = Dispatcher()
-    dispatcher.map("/temperature", handle_osc)
-    dispatcher.map("/water_heater", handle_osc)
-    dispatcher.map("/lower_temp", handle_osc)
-    dispatcher.map("/upper_temp", handle_osc)
+    dispatcher.map("/temperature", record_water)
+    dispatcher.map("/water_heater", record_water)
+    dispatcher.map("/water_pressure", record_water)
+    # Static setpoints; the body display shows them, this monitor does not
+    dispatcher.map("/upper_temp", ignore_osc)
+    dispatcher.map("/lower_temp", ignore_osc)
+    dispatcher.set_default_handler(handle_unexpected)
     server = AsyncIOOSCUDPServer((monitor_ip, 8888), dispatcher, asyncio.get_event_loop())
     transport, protocol = await server.create_serve_endpoint()
 

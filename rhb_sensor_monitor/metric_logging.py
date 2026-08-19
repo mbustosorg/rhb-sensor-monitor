@@ -27,7 +27,7 @@ class MetricLogging:
         self.pressure = None
         self.position = None
         self.imu = None
-        self.temp = None
+        self.water = None
         self.disk = None
         self.persist_period = persist_period
         self.broadcast_period = broadcast_period
@@ -43,7 +43,7 @@ class MetricLogging:
         self.pressure = pd.DataFrame(columns=["timestamp", "level"])
         self.position = pd.DataFrame(columns=["timestamp", "lat", "lon", "alt"])
         self.imu = pd.DataFrame(columns=["timestamp", "heading", "speed"])
-        self.temp = pd.DataFrame(columns=["timestamp", "temp_f", "temp_cpu"])
+        self.water = pd.DataFrame(columns=["timestamp", "temp_f", "heater_status", "pressure_psi"])
         self.disk = pd.DataFrame(columns=["timestamp", "free"])
 
     def persist(self):
@@ -63,8 +63,8 @@ class MetricLogging:
                 os.path.join(self.location, "heading_" + timestamp + ".csv"),
                 index=False,
             )
-            self.temp.to_csv(
-                os.path.join(self.location, "temp_" + timestamp + ".csv"), index=False
+            self.water.to_csv(
+                os.path.join(self.location, "water_" + timestamp + ".csv"), index=False
             )
             self.disk.to_csv(
                 os.path.join(self.location, "disk_" + timestamp + ".csv"), index=False
