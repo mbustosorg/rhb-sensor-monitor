@@ -32,8 +32,6 @@ from pythonosc import udp_client
 from digi.xbee.devices import XBeeDevice, RemoteXBeeDevice, XBee64BitAddress
 import geopy.distance
 
-import rhb_sensor_monitor.alternating_sensor as AS
-
 XBEE_COORDINATOR = "0013A20041CB4F87"
 XBEE_ROUTER = "0013A20041CB7786"
 radio = XBeeDevice("/dev/ttyUSB0", 9600)
@@ -82,9 +80,6 @@ metrics = ml.MetricLogging(
     "/home/pi/development/data",
 )
 
-#oil_pressure_sensor = AS.AlternatingSensor(29, "oil_pressure", 1000)
-#speedometer_sensor = AS.AlternatingSensor(31, "speedometer", 1000)
-
 
 def handle_exception(func):
     """ Handle exception when interacting with peripherals """
@@ -101,14 +96,24 @@ def handle_exception(func):
 def broadcast(endpoint, value):
     """ Broadcast `value' to every listener
 
-    Each send is isolated.  With one try around the whole loop, the first
-    listener that raised aborted the loop, so every listener after it in
-    osc_clients silently stopped receiving -- and which ones those were
-    depended on nothing more than their position in the list.
+    Nothing in here may raise.  Callers send several addresses in a row under
+    @handle_exception, so a value this cannot encode used to abort the caller
+    and silence every address that came after it -- /poof_count sat last in
+    broadcast_last() and is the only address with no other producer, so it was
+    the one that vanished.
+
+    Each send is isolated for the same reason.  With one try around the whole
+    loop, the first listener that raised aborted the loop, so every listener
+    after it in osc_clients silently stopped receiving -- and which ones those
+    were depended on nothing more than their position in the list.
     """
-    msg = osc_message_builder.OscMessageBuilder(address=endpoint)
-    msg.add_arg(value)
-    built = msg.build()
+    try:
+        msg = osc_message_builder.OscMessageBuilder(address=endpoint)
+        msg.add_arg(value)
+        built = msg.build()
+    except Exception as exception:
+        logger.error(f"Cannot build {endpoint} from {value!r}: {exception}")
+        return
     for label, client in osc_clients:
         try:
             client.send(built)
@@ -198,7 +203,18 @@ def update_pressure():
 
 
 def cardinal_from_heading(heading) -> str:
-    """Cardinal direction from heading value"""
+    """Cardinal direction from heading value, "" if there is not one
+
+    Total by construction.  A NaN heading compares False against every bound,
+    so this used to fall out the bottom and return None, which is not an OSC
+    type -- the send raised and took the rest of broadcast_last() with it.
+    """
+    try:
+        heading = float(heading) % 360.0
+    except (TypeError, ValueError):
+        return ""
+    if heading != heading:
+        return ""
     if heading >= 337.5 or heading < 22.5:
         return "N"
     if 22.5 <= heading < 67.5:
@@ -225,7 +241,9 @@ def update_imu():
     if metrics.imu.shape[0] < 5 or (abs(heading - metrics.imu["heading"].iloc[-5:].mean()) > 2.0):
         broadcast("/imu", json.dumps(updated_imu_state))
         broadcast("/heading", heading)
-        broadcast("/cardinal", cardinal_from_heading(heading))
+        cardinal = cardinal_from_heading(heading)
+        if cardinal:
+            broadcast("/cardinal", cardinal)
         metrics.imu = pd.concat(
             [
                 metrics.imu,
@@ -265,39 +283,22 @@ def broadcast_last():
             logger.error(str(exception))
     if metrics.time_to_broadcast():
         logger.debug("State broadcast")
+        # This is the only path that produces /poof_count, so it goes first.
+        # Everything below is a repeat of a value that is also sent on change.
+        broadcast("/poof_count", float(poof_track.poof_count))
+        #broadcast("/poof_seconds", float(poof_track.poof_time))
+        broadcast("/pressure", float(round(float(poof_track.last_pressure))))
         if metrics.position.shape[0] > 0:
             broadcast("/position/lat", float(metrics.position["lat"].iloc[-1]))
             broadcast("/position/lon", float(metrics.position["lon"].iloc[-1]))
         if metrics.imu.shape[0] > 0:
-            broadcast("/heading", float(metrics.imu["heading"].iloc[-1]))
-            broadcast("/cardinal", cardinal_from_heading(float(metrics.imu["heading"].iloc[-1])))
-        broadcast("/pressure", float(round(float(poof_track.last_pressure))))
+            heading = float(metrics.imu["heading"].iloc[-1])
+            broadcast("/heading", heading)
+            cardinal = cardinal_from_heading(heading)
+            if cardinal:
+                broadcast("/cardinal", cardinal)
         #if metrics.disk.shape[0] > 0:
         #    broadcast("/free_disk", float(metrics.disk["free"].iloc[-1]))
-        broadcast("/poof_count", float(poof_track.poof_count))
-        #broadcast("/poof_seconds", float(poof_track.poof_time))
-        #broadcast("/engine", float(oil_pressure_sensor.sample()))
-        #broadcast("/moving", float(oil_pressure_sensor.active()))
-
-
-@handle_exception
-def update_oil_pressure():
-    """Check on oil_pressure"""
-    new_value = oil_pressure_sensor.sample()
-    if oil_pressure_sensor.should_broadcast(new_value):
-        broadcast("/engine", float(new_value))
-
-
-@handle_exception
-def update_speedometer():
-    """Check on speedometer"""
-    new_value = speedometer_sensor.active()
-    if speedometer_sensor.should_broadcast(new_value):
-        if new_value:
-            print("moving")
-        else:
-            print("stopped")
-        broadcast("/moving", float(new_value))
 
 
 async def main_loop():
@@ -308,8 +309,6 @@ async def main_loop():
         try:
             metrics.persist()
             update_pressure()
-            #update_oil_pressure()
-            #update_speedometer()
             update_imu()
             #update_disk_usage()
             new_data = gps_socket.next()
@@ -408,7 +407,7 @@ if __name__ == "__main__":
         "--ip", default="192.168.1.3", help="The ip of the monitor"
     )
     parser.add_argument(
-        "--display_ip", default="127.0.0.1", help="The ip of the display osc server"
+        "--display_ip", default="127.0.1.1", help="The ip of the display osc server"
     )
     parser.add_argument(
         "--display_port",
