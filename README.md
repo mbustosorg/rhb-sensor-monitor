@@ -77,7 +77,11 @@ How the main loop works
 `main_loop()` is a single asyncio task that cycles roughly every 50 ms
 alongside the OSC server.  Each pass:
 
-* **Persist** any history that has aged past 15 minutes.
+* **Persist** any history that has aged past 15 minutes.  This, the 5 second
+  rebroadcast, the XBee report and the 500 ms pressure refresh are all timed on
+  `time.monotonic()`.  The Pi boots about seven hours fast and the first GPS
+  fix sets it back; on the wall clock every interval went negative at that
+  step and nothing persisted or rebroadcast until dawn, all of 2026.
 * **Pressure.**  Read the ADC, decide whether the sensor is even connected,
   convert to PSI, look for a poof, broadcast.  `/pressure` goes out at least
   every 500 ms so downstream gauges never sit on a stale value.

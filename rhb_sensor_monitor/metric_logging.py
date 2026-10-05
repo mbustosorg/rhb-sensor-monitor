@@ -14,16 +14,28 @@
 
 import os
 import datetime
+import time
 import pandas as pd
 
 
 class MetricLogging:
+    """ Rolling sensor histories, and when to persist and rebroadcast them
+
+    Intervals are timed on time.monotonic(), never on the wall clock.  This Pi
+    has no RTC: it comes up with the clock about seven hours fast and the first
+    GPS fix sets it back.  Timed on the wall clock, the elapsed time since the
+    last persist went negative at that step and stayed under the period for
+    seven hours, so nothing was persisted, rebroadcast or sent to the base
+    station until dawn.  The wall clock is still what stamps rows and names
+    files, since that is the time the logs have to line up against.
+    """
+
     def __init__(self, persist_period, broadcast_period, location):
         self.location = location
-        self.last_broadcast = datetime.datetime.now()
-        self.last_radio_broadcast = datetime.datetime.now()
-        self.last_persist = datetime.datetime.now()
-        self.last_persist_timestamp = datetime.datetime.now()
+        self.last_broadcast = time.monotonic()
+        self.last_radio_broadcast = time.monotonic()
+        self.last_persist = time.monotonic()
+        self.last_persist_timestamp = None
         self.pressure = None
         self.position = None
         self.imu = None
@@ -48,9 +60,9 @@ class MetricLogging:
 
     def persist(self):
         """ Store off histories periodically """
-        if datetime.datetime.now() - self.last_persist > self.persist_period:
-            self.last_persist = datetime.datetime.now()
-            timestamp = self.last_persist.strftime("%Y%m%d_%H_%M")
+        if time.monotonic() - self.last_persist > self.persist_period.total_seconds():
+            self.last_persist = time.monotonic()
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H_%M")
             self.position.to_csv(
                 os.path.join(self.location, "positions_" + timestamp + ".csv"),
                 index=False,
@@ -75,14 +87,14 @@ class MetricLogging:
 
     def time_to_broadcast(self):
         """ Should we broadcast an update? """
-        if datetime.datetime.now() - self.last_broadcast > self.broadcast_period:
-            self.last_broadcast = datetime.datetime.now()
+        if time.monotonic() - self.last_broadcast > self.broadcast_period.total_seconds():
+            self.last_broadcast = time.monotonic()
             return True
         return False
 
     def time_to_broadcast_by_radio(self):
         """ Should we broadcast an update? """
-        if datetime.datetime.now() - self.last_radio_broadcast > self.broadcast_period * 10:
-            self.last_radio_broadcast = datetime.datetime.now()
+        if time.monotonic() - self.last_radio_broadcast > self.broadcast_period.total_seconds() * 10:
+            self.last_radio_broadcast = time.monotonic()
             return True
         return False

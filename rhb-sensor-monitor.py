@@ -21,6 +21,7 @@ from logging import Logger
 from logging.handlers import RotatingFileHandler
 import os
 import shutil
+import time
 
 import pandas as pd
 import piglow
@@ -69,7 +70,10 @@ gps_socket.connect()
 gps_socket.watch()
 
 PRESSURE_PERIOD = datetime.timedelta(seconds=0.5)
-last_pressure_timestamp = datetime.datetime.now()
+# Monotonic: see MetricLogging for what the wall clock does to an interval on this Pi
+last_pressure_timestamp = time.monotonic()
+# When the last position was logged, for the speed inferred from the next one
+last_position_time = time.monotonic()
 
 poof_track = pt.PoofTrack()
 pressure_health = ph.PressureHealth()
@@ -124,6 +128,7 @@ def broadcast(endpoint, value):
 @handle_exception
 def update_position(gps):
     """ Broadcast the current position """
+    global last_position_time
     if "n/a" not in str(gps.TPV["lat"]) and "n/a" not in str(gps.TPV["lon"]):
         lat = float(gps.TPV["lat"])
         lon = float(gps.TPV["lon"])
@@ -138,10 +143,14 @@ def update_position(gps):
                 coords_1 = (metrics.position["lat"].iloc[-1], metrics.position["lon"].iloc[-1])
                 coords_2 = (lat, lon)
                 distance = geopy.distance.geodesic(coords_1, coords_2).mi
-                timestamp_diff = datetime.datetime.now() - datetime.datetime.strptime(metrics.position["timestamp"].iloc[-1], "%Y-%m-%dT%H:%M:%S.%f")
-                inferred_speed = distance / timestamp_diff.seconds * 3600
+                # Timed on the monotonic clock, not the logged timestamp: across the GPS
+                # clock step the wall clock difference is seven hours negative, and
+                # .seconds of a diff under a second was a division by zero
+                elapsed = time.monotonic() - last_position_time
+                inferred_speed = distance / elapsed * 3600 if elapsed > 0 else 0.0
             else:
                 inferred_speed = 0.0
+            last_position_time = time.monotonic()
 
             broadcast("/position/lat", lat)
             broadcast("/position/lon", lon)
@@ -166,7 +175,7 @@ def update_position(gps):
 def update_pressure():
     """ Broadcast the current accumulator pressure """
     global last_pressure_timestamp
-    update = (datetime.datetime.now() - last_pressure_timestamp) > PRESSURE_PERIOD
+    update = (time.monotonic() - last_pressure_timestamp) > PRESSURE_PERIOD.total_seconds()
     raw_pressure = pressure_sensor.read_pressure()
     was_connected = pressure_health.connected
     if not pressure_health.update(raw_pressure):
@@ -178,13 +187,13 @@ def update_pressure():
             # Nothing worth tracking or storing, but keep the displays alive
             broadcast("/pressure", float(round(float(poof_track.last_pressure))))
             broadcast("/pressure_fine", poof_track.last_pressure)
-            last_pressure_timestamp = datetime.datetime.now()
+            last_pressure_timestamp = time.monotonic()
         return
     pressure = poof_track.pressure_from_raw(raw_pressure)
     if update or pressure != poof_track.last_pressure:
         broadcast("/pressure", float(round(float(poof_track.last_pressure))))
         broadcast("/pressure_fine", poof_track.last_pressure)
-        last_pressure_timestamp = datetime.datetime.now()
+        last_pressure_timestamp = time.monotonic()
         poof_track.add_observation(pressure)
     if metrics.pressure.empty or poof_track.poofing():
         piglow.red(64)

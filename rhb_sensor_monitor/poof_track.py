@@ -14,6 +14,7 @@
 
 import datetime
 import logging
+import time
 
 import pandas as pd
 from collections import deque
@@ -69,7 +70,8 @@ class PoofTrack:
 
     def start(self):
         """ Poof start detected """
-        self.poof_start = datetime.datetime.now()
+        # Monotonic, so a clock set from GPS mid-poof cannot make one hours long
+        self.poof_start = time.monotonic()
         self.poof_count += 1
 
     def stop(self):
@@ -77,6 +79,6 @@ class PoofTrack:
         if self.poof_start is not None:
             self.poof_time = (
                 self.poof_time
-                + (datetime.datetime.now() - self.poof_start).total_seconds()
+                + (time.monotonic() - self.poof_start)
             )
             self.poof_start = None
