@@ -69,7 +69,9 @@ Running it
 
 In the car it is started by `rhb_body_driver.service` out of
 `/home/pi/development/startup.sh`, with `Restart=always`.  Logs go to
-`rhb-sensor-monitor.log`, rotating at 200 KB with five backups.
+`rhb-sensor-monitor.log`, rotating at 200 KB with five backups, and to stderr,
+which systemd puts in the journal.  With `RHB_DATA_DIR` set (see "Read-only
+SD card" below) the log file and the CSV histories move under that directory.
 
 How the main loop works
 -----------------------
@@ -138,7 +140,7 @@ Data logging
 
 `metric_logging.py` accumulates five pandas frames in memory and writes them
 to `/home/pi/development/data` every 15 minutes as
-`<kind>_YYYYMMDD_HH_MM.csv`:
+`<kind>_YYYYMMDD_HH_MM.csv` (`$RHB_DATA_DIR/data` when that is set):
 
 | File | Columns |
 | --- | --- |
@@ -212,6 +214,37 @@ Any mains-powered WiFi listener therefore disables power save at startup:
 
 Symptom when it is missing: one sender reaches a listener and another does not,
 with `Operation timed out. No data sent.` on the sender that fails.
+
+Read-only SD card
+-----------------
+
+A power cut mid-write is what corrupts SD cards, and this car loses power
+without warning.  `scripts/setup-readonly.sh` makes the card read-only (a RAM
+overlay on top of it) and moves everything worth keeping onto a USB stick:
+
+    lsblk -o NAME,TRAN,SIZE,LABEL           # find the stick, e.g. sda1
+    sudo scripts/setup-readonly.sh --device /dev/sda1 --format \
+        --app rhb-sensor-monitor --unit rhb_body_driver.service
+    sudo reboot
+
+Afterwards:
+
+* `/data` is the stick (ext4, label `RHBDATA`).
+* The systemd journal lives on it (`/var/log/journal` is bind-mounted from
+  `/data/journal`), so `journalctl -u rhb_body_driver` survives a reboot.
+* `rhb_body_driver.service` gets `RHB_DATA_DIR=/data/rhb-sensor-monitor`, and
+  the monitor writes `rhb-sensor-monitor.log` and `data/*.csv` there.
+* **If the stick is missing the car still boots and the monitor still runs**;
+  it logs an error and writes to the old paths, which are in RAM and gone at
+  the next power off.
+* Anything else that writes to the card -- including the Processing driver
+  display -- is writing to RAM.
+
+The same script, kept identical, is in `rhb-led-driver`.  To change code or
+packages later, turn the overlay off first: `sudo raspi-config` ->
+Performance Options -> Overlay File System -> No (and No to read-only boot),
+reboot, update, turn it back on, reboot.  `--no-overlay` runs every step
+except that one, to check the stick setup across a reboot first.
 
 Installation and calibration
 ----------------------------

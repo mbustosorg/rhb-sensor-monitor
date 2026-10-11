@@ -56,7 +56,20 @@ LOGGER: Logger = logging.getLogger("rhb-sensor-monitor")
 LOGGER.setLevel(logging.INFO)
 LOG_FORMAT = logging.Formatter(FORMAT)
 
-FILE_HANDLER = RotatingFileHandler("rhb-sensor-monitor.log", maxBytes=200000, backupCount=5)
+# With a read-only SD card (scripts/setup-readonly.sh) the service gets
+# RHB_DATA_DIR on the USB stick.  If the stick did not mount, the directory is
+# missing: fall back to the old relative paths, which then land in RAM, rather
+# than fail to start -- the car's gauges matter more than the history.
+DATA_ROOT = os.environ.get("RHB_DATA_DIR")
+DATA_ROOT_MISSING = bool(DATA_ROOT) and not os.path.isdir(DATA_ROOT)
+if DATA_ROOT_MISSING:
+    DATA_ROOT = None
+LOG_FILE = os.path.join(DATA_ROOT, "rhb-sensor-monitor.log") if DATA_ROOT else "rhb-sensor-monitor.log"
+DATA_DIR = os.path.join(DATA_ROOT, "data") if DATA_ROOT else "/home/pi/development/data"
+if DATA_ROOT:
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+FILE_HANDLER = RotatingFileHandler(LOG_FILE, maxBytes=200000, backupCount=5)
 FILE_HANDLER.setLevel(logging.INFO)
 FILE_HANDLER.setFormatter(LOG_FORMAT)
 LOGGER.addHandler(FILE_HANDLER)
@@ -65,6 +78,9 @@ FORMAT = "%(asctime)-15s|%(module)s|%(lineno)d|%(message)s"
 logging.basicConfig(format=FORMAT)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.INFO)
+if DATA_ROOT_MISSING:
+    logger.error(f"RHB_DATA_DIR {os.environ['RHB_DATA_DIR']} is missing (USB stick?); logs and data are in RAM")
+logger.info(f"Log file {LOG_FILE}, data in {DATA_DIR}")
 
 gps_socket.connect()
 gps_socket.watch()
@@ -81,7 +97,7 @@ water_state = {"/temperature": 0.0, "/water_heater": 0.0}
 metrics = ml.MetricLogging(
     datetime.timedelta(seconds=15 * 60),
     datetime.timedelta(seconds=5),
-    "/home/pi/development/data",
+    DATA_DIR,
 )
 
 
