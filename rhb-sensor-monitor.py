@@ -417,6 +417,8 @@ async def init_main(monitor_ip):
     # Static setpoints; the body display shows them, this monitor does not
     dispatcher.map("/upper_temp", ignore_osc)
     dispatcher.map("/lower_temp", ignore_osc)
+    # The poof button; poofs are counted from the pressure drop instead
+    dispatcher.map("/poof", ignore_osc)
     dispatcher.set_default_handler(handle_unexpected)
     server = AsyncIOOSCUDPServer((monitor_ip, 8888), dispatcher, asyncio.get_event_loop())
     transport, protocol = await server.create_serve_endpoint()
@@ -441,7 +443,7 @@ if __name__ == "__main__":
         help="The port the display osc server is listening on",
     )
     parser.add_argument(
-        "--client_ip", default="192.168.1.4,192.168.1.5,192.168.1.8,192.168.1.9,192.168.1.10,192.168.1.11", help="The IPs of the data clients"
+        "--client_ip", default="192.168.1.4,192.168.1.5,192.168.1.8,192.168.1.9,192.168.1.10,192.168.1.11,192.168.1.13,192.168.1.15", help="The IPs of the data clients"
     )
     parser.add_argument(
         "--client_port",

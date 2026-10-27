@@ -37,6 +37,9 @@ The rig
 | `rhbtelemetry` | 192.168.1.8 | Pico W with a seven segment display |
 | `rhbwaterheater` | 192.168.1.9 | Pico W running the bath: temperature sensor, heater SSR, pump SSR |
 | `mobile` | 192.168.1.5, .10, .11 | TouchOSC layouts (`images/mobile_ui.touchosc`) |
+| `rhbleddriver` | 192.168.1.13 | LED driver (rhb-led-driver): pixels on the hose, handle and gauge, via the F16V5 at 192.168.1.20 on its Ethernet |
+| `beverly` | 192.168.1.14 | Vehicle telemetry (rhb-vehicle-telemetry): CAN bus dashboard; sends OSC only to itself |
+| `rhbpoofcontroller` | 192.168.1.15 | Pico W poof controller (rhb-poof-controller): 12V button sends `/poof`, readouts show pressure and bath temperature |
 
 Everything is on a single WiFi router at 192.168.1.1 with static addresses;
 `config/network.txt` is the authoritative list, and `config/*.service` are the
@@ -62,7 +65,7 @@ Running it
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--ip` | `192.168.1.3` | Address this monitor's own OSC server binds to, port 8888 |
-| `--client_ip` | `192.168.1.4,.5,.8,.9,.10,.11` | Comma separated list of listeners |
+| `--client_ip` | `192.168.1.4,.5,.8,.9,.10,.11,.13,.15` | Comma separated list of listeners |
 | `--client_port` | `8888` | Port those listeners are on |
 | `--display_ip` | `127.0.1.1` | The Processing driver display, normally local |
 | `--display_port` | `10002` | Port the driver display listens on |
