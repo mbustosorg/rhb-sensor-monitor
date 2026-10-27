@@ -34,7 +34,6 @@ The rig
 | `rhbbody` | 192.168.1.3 | This monitor, plus the Processing driver display on port 10002 |
 | `rhbdial` | 192.168.1.4 | Dial driver -- drives the two gauge servos from `/pressure` |
 | `rhbbase` | 192.168.1.6 | Home base: XBee receiver and Teensy driving three LED beacons |
-| `rhbtelemetry` | 192.168.1.8 | Pico W with a seven segment display |
 | `rhbwaterheater` | 192.168.1.9 | Pico W running the bath: temperature sensor, heater SSR, pump SSR |
 | `mobile` | 192.168.1.5, .10, .11 | TouchOSC layouts (`images/mobile_ui.touchosc`) |
 | `rhbleddriver` | 192.168.1.13 | LED driver (rhb-led-driver): pixels on the hose, handle and gauge, via the F16V5 at 192.168.1.20 on its Ethernet |

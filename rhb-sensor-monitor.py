@@ -443,7 +443,7 @@ if __name__ == "__main__":
         help="The port the display osc server is listening on",
     )
     parser.add_argument(
-        "--client_ip", default="192.168.1.4,192.168.1.5,192.168.1.8,192.168.1.9,192.168.1.10,192.168.1.11,192.168.1.13,192.168.1.15", help="The IPs of the data clients"
+        "--client_ip", default="192.168.1.4,192.168.1.5,192.168.1.9,192.168.1.10,192.168.1.11,192.168.1.13,192.168.1.15", help="The IPs of the data clients"
     )
     parser.add_argument(
         "--client_port",
