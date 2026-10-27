@@ -15,8 +15,9 @@ It does four jobs:
 1. **Read the sensors** -- accumulator pressure over I2C, orientation from a
    BerryIMU, position from `gpsd`, disk health from the filesystem.
 2. **Publish over OSC** -- one UDP datagram per value, sent directly to every
-   listener on the car: the dial driver, the driver's display, the telemetry
-   readout, and phones and tablets running TouchOSC.
+   listener on the car: the dial driver, the driver's display, the water
+   heater, the LED driver, the poof controller, and phones and tablets
+   running TouchOSC.
 3. **Log everything** -- rolling CSV histories of pressure, position, heading,
    disk and the water bath, written to disk every 15 minutes.  This process is
    the rig's data logger, including for values other devices produce.
