@@ -85,6 +85,10 @@ gps_socket.connect()
 gps_socket.watch()
 
 PRESSURE_PERIOD = datetime.timedelta(seconds=0.5)
+# Pressure is logged on every reading while poofing, and this often otherwise
+IDLE_PRESSURE_PERIOD = datetime.timedelta(minutes=5)
+# When pressure was last logged, None until the first reading
+last_pressure_logged = None
 # Monotonic: see MetricLogging for what the wall clock does to an interval on this Pi
 last_pressure_timestamp = time.monotonic()
 # When the last position was logged, for the speed inferred from the next one
@@ -96,7 +100,7 @@ poof_track = pt.PoofTrack()
 pressure_health = ph.PressureHealth()
 water_state = {"/temperature": 0.0, "/water_heater": 0.0}
 metrics = ml.MetricLogging(
-    datetime.timedelta(seconds=15 * 60),
+    datetime.timedelta(hours=1),
     datetime.timedelta(seconds=5),
     DATA_DIR,
 )
@@ -199,7 +203,7 @@ def record_poof(source, tracker):
 @handle_exception
 def update_pressure():
     """ Broadcast the current accumulator pressure """
-    global last_pressure_timestamp
+    global last_pressure_timestamp, last_pressure_logged
     update = (time.monotonic() - last_pressure_timestamp) > PRESSURE_PERIOD.total_seconds()
     raw_pressure = pressure_sensor.read_pressure()
     was_connected = pressure_health.connected
@@ -224,13 +228,15 @@ def update_pressure():
         poof_track.add_observation(pressure)
         if poof_track.poofing() != was_poofing:
             record_poof("pressure", poof_track)
-    if metrics.pressure.empty or poof_track.poofing():
-        piglow.red(64)
-        piglow.show()
+    piglow.red(64 if poof_track.poofing() else 0)
+    piglow.show()
+    if (
+        poof_track.poofing()
+        or last_pressure_logged is None
+        or time.monotonic() - last_pressure_logged > IDLE_PRESSURE_PERIOD.total_seconds()
+    ):
         metrics.append("pressure", level=pressure)
-    elif not poof_track.poofing():
-        piglow.red(0)
-        piglow.show()
+        last_pressure_logged = time.monotonic()
 
 
 def cardinal_from_heading(heading) -> str:

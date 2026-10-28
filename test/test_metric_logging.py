@@ -125,3 +125,13 @@ def test_broadcast_survives_the_clock_being_set_back(tmp_path, monkeypatch):
     clocks.advance(45)
     assert metrics.time_to_broadcast_by_radio()
 
+
+def test_memory_keeps_only_recent_rows(tmp_path, monkeypatch):
+    """ An hour of poofing is every reading; only the file keeps them all """
+    clocks = Clocks(datetime.datetime(2026, 8, 30, 22, 45))
+    metrics = logging_at(tmp_path, clocks, monkeypatch)
+    for level in range(ml.RECENT_ROWS + 50):
+        metrics.append("pressure", level=level)
+    assert len(metrics.pressure) == ml.RECENT_ROWS
+    assert metrics.pressure["level"].iloc[-1] == ml.RECENT_ROWS + 49
+    assert len(rows(tmp_path / "pressure_20260830_22_45.csv")) == ml.RECENT_ROWS + 51

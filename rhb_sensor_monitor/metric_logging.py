@@ -31,6 +31,10 @@ STREAMS = {
     "poofs": ("poofs", ["timestamp", "source", "event", "count", "poof_time"]),
 }
 
+# Rows of each kind kept in memory, enough for the monitor's decisions about
+# what to record next.  The files have the rest.
+RECENT_ROWS = 100
+
 # How often written rows are forced onto the stick, bounding what a power
 # cut can take to this many seconds
 SYNC_PERIOD = 5.0
@@ -42,16 +46,18 @@ class MetricLogging:
     Every row is written to its file as it is recorded, and the files are
     fsynced every SYNC_PERIOD seconds.  This car loses power without warning;
     the histories used to be held in memory and written once a period, so a
-    power cut took up to fifteen minutes of every one of them.
+    power cut took up to fifteen minutes of every one of them.  With nothing
+    at stake in the period any more, it is an hour, for fewer files.
 
     Files roll every persist_period, as <prefix>_YYYYMMDD_HH_MM.csv named for
     the wall clock when the file's first row arrived.  An existing file is
     appended to rather than overwritten: once GPS sets the clock back, a
     window's name can repeat one already on the stick.
 
-    The rows of the current window are also kept in memory (self.pressure,
-    self.position, ...), since the monitor decides what to record next from
-    them.  They start empty each window, so each file opens with a fresh row.
+    The last RECENT_ROWS rows of the current window are also kept in memory
+    (self.position, self.imu, ...), since the monitor decides what to record
+    next from them.  They start empty each window, so each file opens with a
+    fresh row.
 
     Intervals are timed on time.monotonic(), never on the wall clock.  This Pi
     has no RTC: it comes up with the clock about seven hours fast and the first
@@ -93,7 +99,8 @@ class MetricLogging:
     def append(self, kind, **values):
         """ Record one row of `kind', stamped now, in memory and on disk """
         row = {"timestamp": self.now_string(), **values}
-        setattr(self, kind, pd.concat([getattr(self, kind), pd.DataFrame.from_records([row])]))
+        recent = pd.concat([getattr(self, kind), pd.DataFrame.from_records([row])])
+        setattr(self, kind, recent.iloc[-RECENT_ROWS:])
         self._write(kind, row)
 
     def _write(self, kind, row):

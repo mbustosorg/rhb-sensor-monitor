@@ -83,7 +83,7 @@ How the main loop works
 alongside the OSC server.  Each pass:
 
 * **Persist.**  Sync the streamed histories to disk every 5 seconds and roll
-  to new files every 15 minutes.  These, the 5 second
+  to new files every hour.  These, the 5 second
   rebroadcast, the XBee report and the 500 ms pressure refresh are all timed on
   `time.monotonic()`.  The Pi boots about seven hours fast and the first GPS
   fix sets it back; on the wall clock every interval went negative at that
@@ -160,7 +160,7 @@ Data logging
 
 | File | Columns |
 | --- | --- |
-| `pressure_*.csv` | timestamp, level |
+| `pressure_*.csv` | timestamp, level: every reading while poofing, every 5 minutes otherwise |
 | `positions_*.csv` | timestamp, lat, lon, alt, speed |
 | `heading_*.csv` | timestamp, heading |
 | `water_*.csv` | timestamp, temp_f, heater_status, pressure_psi |
@@ -172,8 +172,8 @@ fsynced every 5 seconds, so a power cut loses at most the last few seconds.
 (These used to sit in memory and be written once every 15 minutes; a power
 cut took up to a quarter hour of everything.)
 
-Every 15 minutes the files are closed and the next row of each kind opens a
-new one, named for the wall clock at that moment.  A kind with nothing to
+Every hour the files are closed and the next row of each kind opens a new
+one, named for the wall clock at that moment.  A kind with nothing to
 record in a window gets no file.  If a name already exists -- after GPS sets
 the clock back, it can -- the file is appended to, never overwritten.  If the
 stick is missing or full the monitor logs it once, keeps running, and retries
