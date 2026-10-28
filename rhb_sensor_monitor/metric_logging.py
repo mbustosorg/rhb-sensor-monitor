@@ -12,14 +12,46 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-import os
+import csv
 import datetime
+import logging
+import os
 import time
 import pandas as pd
 
+logger = logging.getLogger("rhb-sensor-monitor")
+
+# Attribute holding the recent rows -> (file prefix, columns)
+STREAMS = {
+    "pressure": ("pressure", ["timestamp", "level"]),
+    "position": ("positions", ["timestamp", "lat", "lon", "alt", "speed"]),
+    "imu": ("heading", ["timestamp", "heading"]),
+    "water": ("water", ["timestamp", "temp_f", "heater_status", "pressure_psi"]),
+    "disk": ("disk", ["timestamp", "free"]),
+    "poofs": ("poofs", ["timestamp", "source", "event", "count", "poof_time"]),
+}
+
+# How often written rows are forced onto the stick, bounding what a power
+# cut can take to this many seconds
+SYNC_PERIOD = 5.0
+
 
 class MetricLogging:
-    """ Rolling sensor histories, and when to persist and rebroadcast them
+    """ Sensor histories, streamed to CSV, and when to rebroadcast them
+
+    Every row is written to its file as it is recorded, and the files are
+    fsynced every SYNC_PERIOD seconds.  This car loses power without warning;
+    the histories used to be held in memory and written once a period, so a
+    power cut took up to fifteen minutes of every one of them.
+
+    Files roll every persist_period, as <prefix>_YYYYMMDD_HH_MM.csv named for
+    the wall clock when the file's first row arrived.  An existing file is
+    appended to rather than overwritten: once GPS sets the clock back, a
+    window's name can repeat one already on the stick.
+
+    The rows of the current window are also kept in memory (self.pressure,
+    self.position, ...), since the monitor decides what to record next from
+    them.  They start empty each window, so each file opens with a fresh row.
 
     Intervals are timed on time.monotonic(), never on the wall clock.  This Pi
     has no RTC: it comes up with the clock about seven hours fast and the first
@@ -35,7 +67,9 @@ class MetricLogging:
         self.last_broadcast = time.monotonic()
         self.last_radio_broadcast = time.monotonic()
         self.last_persist = time.monotonic()
-        self.last_persist_timestamp = None
+        self.last_sync = time.monotonic()
+        self.files = {}
+        self.failing = set()
         self.pressure = None
         self.position = None
         self.imu = None
@@ -52,43 +86,80 @@ class MetricLogging:
         return datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f")
 
     def initialize(self):
-        """ Re-initialize history records """
-        self.pressure = pd.DataFrame(columns=["timestamp", "level"])
-        self.position = pd.DataFrame(columns=["timestamp", "lat", "lon", "alt"])
-        self.imu = pd.DataFrame(columns=["timestamp", "heading", "speed"])
-        self.water = pd.DataFrame(columns=["timestamp", "temp_f", "heater_status", "pressure_psi"])
-        self.disk = pd.DataFrame(columns=["timestamp", "free"])
-        self.poofs = pd.DataFrame(columns=["timestamp", "source", "event", "count", "poof_time"])
+        """ Start a fresh window of recent rows """
+        for kind, (_, columns) in STREAMS.items():
+            setattr(self, kind, pd.DataFrame(columns=columns))
+
+    def append(self, kind, **values):
+        """ Record one row of `kind', stamped now, in memory and on disk """
+        row = {"timestamp": self.now_string(), **values}
+        setattr(self, kind, pd.concat([getattr(self, kind), pd.DataFrame.from_records([row])]))
+        self._write(kind, row)
+
+    def _write(self, kind, row):
+        """ Append `row' to the current file for `kind'
+
+        Never raises: a missing or full stick must not stop the monitor
+        publishing.  The failure is logged once, and the file reopened on the
+        next row.
+        """
+        prefix, columns = STREAMS[kind]
+        try:
+            if kind not in self.files:
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H_%M")
+                path = os.path.join(self.location, f"{prefix}_{timestamp}.csv")
+                handle = open(path, "a", newline="")
+                writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore", lineterminator="\n")
+                if handle.tell() == 0:
+                    writer.writeheader()
+                self.files[kind] = (handle, writer)
+            handle, writer = self.files[kind]
+            writer.writerow(row)
+            handle.flush()
+            if kind in self.failing:
+                self.failing.discard(kind)
+                logger.info(f"Writing {prefix} history again")
+        except Exception as exception:
+            self._close(kind)
+            if kind not in self.failing:
+                self.failing.add(kind)
+                logger.error(f"Could not write {prefix} history: {exception}")
+
+    def _close(self, kind):
+        """ Sync and close the file for `kind', if one is open """
+        handle, _ = self.files.pop(kind, (None, None))
+        if handle is not None:
+            try:
+                handle.flush()
+                os.fsync(handle.fileno())
+                handle.close()
+            except Exception as exception:
+                logger.error(f"Could not close {handle.name}: {exception}")
+
+    def sync(self):
+        """ Force everything written so far onto the disk """
+        for kind, (handle, _) in list(self.files.items()):
+            try:
+                os.fsync(handle.fileno())
+            except Exception as exception:
+                logger.error(f"Could not sync {handle.name}: {exception}")
+                self._close(kind)
 
     def persist(self):
-        """ Store off histories periodically """
+        """ Sync streamed rows periodically, and roll to new files each period """
+        if time.monotonic() - self.last_sync > SYNC_PERIOD:
+            self.last_sync = time.monotonic()
+            self.sync()
         if time.monotonic() - self.last_persist > self.persist_period.total_seconds():
             self.last_persist = time.monotonic()
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H_%M")
-            self.position.to_csv(
-                os.path.join(self.location, "positions_" + timestamp + ".csv"),
-                index=False,
-            )
-            self.pressure.to_csv(
-                os.path.join(self.location, "pressure_" + timestamp + ".csv"),
-                index=False,
-            )
-            self.imu.to_csv(
-                os.path.join(self.location, "heading_" + timestamp + ".csv"),
-                index=False,
-            )
-            self.water.to_csv(
-                os.path.join(self.location, "water_" + timestamp + ".csv"), index=False
-            )
-            self.disk.to_csv(
-                os.path.join(self.location, "disk_" + timestamp + ".csv"), index=False
-            )
-            self.poofs.to_csv(
-                os.path.join(self.location, "poofs_" + timestamp + ".csv"), index=False
-            )
-            if self.last_persist_timestamp != timestamp:
-                self.last_persist_timestamp = timestamp
-                self.initialize()
+            for kind in list(self.files):
+                self._close(kind)
+            self.initialize()
+
+    def close(self):
+        """ Sync and close every file """
+        for kind in list(self.files):
+            self._close(kind)
 
     def time_to_broadcast(self):
         """ Should we broadcast an update? """

@@ -45,15 +45,31 @@ def logging_at(tmp_path, clocks, monkeypatch):
     return ml.MetricLogging(datetime.timedelta(minutes=15), datetime.timedelta(seconds=5), str(tmp_path))
 
 
-def test_persist(tmp_path, monkeypatch):
+def rows(path):
+    return path.read_text().splitlines()
+
+
+def test_rows_stream_to_disk(tmp_path, monkeypatch):
+    """ A row is on disk as soon as it is recorded, not at the end of the window """
     clocks = Clocks(datetime.datetime(2026, 8, 30, 22, 45))
     metrics = logging_at(tmp_path, clocks, monkeypatch)
-    metrics.persist()
-    assert not list(tmp_path.iterdir())
+    metrics.append("pressure", level=12.5)
+    metrics.append("poofs", source="button", event="start", count=1, poof_time=0.0)
+    assert rows(tmp_path / "pressure_20260830_22_45.csv") == ["timestamp,level", "2026-08-30T22:45:00.000000,12.5"]
+    assert rows(tmp_path / "poofs_20260830_22_45.csv")[1].endswith(",button,start,1,0.0")
+    assert not (tmp_path / "positions_20260830_22_45.csv").exists()
+
+
+def test_persist_rolls_to_a_new_file(tmp_path, monkeypatch):
+    clocks = Clocks(datetime.datetime(2026, 8, 30, 22, 45))
+    metrics = logging_at(tmp_path, clocks, monkeypatch)
+    metrics.append("pressure", level=12.0)
     clocks.advance(15 * 60 + 1)
     metrics.persist()
-    assert (tmp_path / "pressure_20260830_23_00.csv").exists()
-    assert (tmp_path / "poofs_20260830_23_00.csv").exists()
+    assert metrics.pressure.empty
+    metrics.append("pressure", level=13.0)
+    assert len(rows(tmp_path / "pressure_20260830_22_45.csv")) == 2
+    assert len(rows(tmp_path / "pressure_20260830_23_00.csv")) == 2
 
 
 def test_persist_survives_the_clock_being_set_back(tmp_path, monkeypatch):
@@ -67,7 +83,36 @@ def test_persist_survives_the_clock_being_set_back(tmp_path, monkeypatch):
     clocks.wall = datetime.datetime(2026, 8, 30, 22, 45)
     clocks.advance(15 * 60 + 1)
     metrics.persist()
+    metrics.append("position", lat=37.0, lon=-122.0, alt=10.0, speed=0.0)
     assert (tmp_path / "positions_20260830_23_00.csv").exists()
+
+
+def test_a_repeated_name_appends(tmp_path, monkeypatch):
+    """ Once the clock is set back a window's name can repeat; keep both """
+    clocks = Clocks(datetime.datetime(2026, 8, 30, 22, 45))
+    metrics = logging_at(tmp_path, clocks, monkeypatch)
+    metrics.append("water", temp_f=90.0, heater_status=1.0, pressure_psi=20.0)
+    clocks.advance(15 * 60 + 1)
+    metrics.persist()
+    clocks.wall = datetime.datetime(2026, 8, 30, 22, 45)
+    metrics.append("water", temp_f=91.0, heater_status=0.0, pressure_psi=20.0)
+    assert rows(tmp_path / "water_20260830_22_45.csv") == [
+        "timestamp,temp_f,heater_status,pressure_psi",
+        "2026-08-30T22:45:00.000000,90.0,1.0,20.0",
+        "2026-08-30T22:45:00.000000,91.0,0.0,20.0",
+    ]
+
+
+def test_a_missing_stick_does_not_raise(tmp_path, monkeypatch):
+    clocks = Clocks(datetime.datetime(2026, 8, 30, 22, 45))
+    metrics = logging_at(tmp_path / "gone", clocks, monkeypatch)
+    metrics.append("pressure", level=12.0)
+    clocks.advance(6)
+    metrics.persist()
+    assert metrics.pressure["level"].iloc[-1] == 12.0
+    (tmp_path / "gone").mkdir()
+    metrics.append("pressure", level=13.0)
+    assert len(rows(tmp_path / "gone" / "pressure_20260830_22_45.csv")) == 2
 
 
 def test_broadcast_survives_the_clock_being_set_back(tmp_path, monkeypatch):
@@ -79,3 +124,4 @@ def test_broadcast_survives_the_clock_being_set_back(tmp_path, monkeypatch):
     assert not metrics.time_to_broadcast()
     clocks.advance(45)
     assert metrics.time_to_broadcast_by_radio()
+

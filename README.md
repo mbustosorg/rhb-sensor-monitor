@@ -19,7 +19,7 @@ It does four jobs:
    heater, the LED driver, the poof controller, and phones and tablets
    running TouchOSC.
 3. **Log everything** -- rolling CSV histories of pressure, position, heading,
-   disk, poofs and the water bath, written to disk every 15 minutes.  This process is
+   disk, poofs and the water bath, streamed to disk as they happen.  This process is
    the rig's data logger, including for values other devices produce.
 4. **Phone home** -- the last known position goes out over an XBee serial link
    to the base station, which is off the WiFi network and often out of range of
@@ -82,7 +82,8 @@ How the main loop works
 `main_loop()` is a single asyncio task that cycles roughly every 50 ms
 alongside the OSC server.  Each pass:
 
-* **Persist** any history that has aged past 15 minutes.  This, the 5 second
+* **Persist.**  Sync the streamed histories to disk every 5 seconds and roll
+  to new files every 15 minutes.  These, the 5 second
   rebroadcast, the XBee report and the 500 ms pressure refresh are all timed on
   `time.monotonic()`.  The Pi boots about seven hours fast and the first GPS
   fix sets it back; on the wall clock every interval went negative at that
@@ -153,9 +154,9 @@ the last good pressure keeps being broadcast so the gauges stay alive.
 Data logging
 ------------
 
-`metric_logging.py` accumulates six pandas frames in memory and writes them
-to `/home/pi/development/data` every 15 minutes as
-`<kind>_YYYYMMDD_HH_MM.csv` (`$RHB_DATA_DIR/data` when that is set):
+`metric_logging.py` streams six histories to CSV in
+`/home/pi/development/data` (`$RHB_DATA_DIR/data` when that is set), as
+`<kind>_YYYYMMDD_HH_MM.csv`:
 
 | File | Columns |
 | --- | --- |
@@ -166,9 +167,19 @@ to `/home/pi/development/data` every 15 minutes as
 | `disk_*.csv` | timestamp, free |
 | `poofs_*.csv` | timestamp, source (`button` or `pressure`), event (`start` or `stop`), count, poof_time |
 
-Each period rewrites the current file and then starts a fresh buffer, so a
-window is written repeatedly as it fills and closed out when the timestamp
-rolls.  Archived runs live in `data/`, and the notebooks in `reporting/`
+Each row is written and flushed as it is recorded, and every open file is
+fsynced every 5 seconds, so a power cut loses at most the last few seconds.
+(These used to sit in memory and be written once every 15 minutes; a power
+cut took up to a quarter hour of everything.)
+
+Every 15 minutes the files are closed and the next row of each kind opens a
+new one, named for the wall clock at that moment.  A kind with nothing to
+record in a window gets no file.  If a name already exists -- after GPS sets
+the clock back, it can -- the file is appended to, never overwritten.  If the
+stick is missing or full the monitor logs it once, keeps running, and retries
+on the next row.
+
+Archived runs live in `data/`, and the notebooks in `reporting/`
 (`after_activity_report.ipynb`, `voltage.ipynb`) are what the seasons get
 summarized with.
 

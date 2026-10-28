@@ -23,7 +23,6 @@ import os
 import shutil
 import time
 
-import pandas as pd
 import piglow
 from gps3 import gps3
 from pythonosc.osc_server import AsyncIOOSCUDPServer
@@ -175,14 +174,7 @@ def update_position(gps):
             broadcast("/position/alt", alt)
             broadcast("/position/inferred_speed", inferred_speed)
 
-            metrics.position = pd.concat(
-                [
-                    metrics.position,
-                    pd.DataFrame.from_records(
-                        [{"timestamp": metrics.now_string(), "lat": lat, "lon": lon, "alt": alt, "speed": inferred_speed}]
-                    ),
-                ]
-            )
+            metrics.append("position", lat=lat, lon=lon, alt=alt, speed=inferred_speed)
             logger.info(fr"Latitude = {data_stream.TPV['lat']}")
             logger.info(fr"Longitude = {data_stream.TPV['lon']}")
             logger.info(fr"Altitude = {data_stream.TPV['alt']}")
@@ -195,21 +187,12 @@ def record_poof(source, tracker):
     Both trackers write here, so poofs_*.csv lines up what the button said
     against what the pressure drop said.
     """
-    metrics.poofs = pd.concat(
-        [
-            metrics.poofs,
-            pd.DataFrame.from_records(
-                [
-                    {
-                        "timestamp": metrics.now_string(),
-                        "source": source,
-                        "event": "start" if tracker.poofing() else "stop",
-                        "count": tracker.poof_count,
-                        "poof_time": tracker.poof_time,
-                    }
-                ]
-            ),
-        ]
+    metrics.append(
+        "poofs",
+        source=source,
+        event="start" if tracker.poofing() else "stop",
+        count=tracker.poof_count,
+        poof_time=tracker.poof_time,
     )
 
 
@@ -244,14 +227,7 @@ def update_pressure():
     if metrics.pressure.empty or poof_track.poofing():
         piglow.red(64)
         piglow.show()
-        metrics.pressure = pd.concat(
-            [
-                metrics.pressure,
-                pd.DataFrame.from_records(
-                    [{"timestamp": metrics.now_string(), "level": pressure}]
-                ),
-            ]
-        )
+        metrics.append("pressure", level=pressure)
     elif not poof_track.poofing():
         piglow.red(0)
         piglow.show()
@@ -299,14 +275,7 @@ def update_imu():
         cardinal = cardinal_from_heading(heading)
         if cardinal:
             broadcast("/cardinal", cardinal)
-        metrics.imu = pd.concat(
-            [
-                metrics.imu,
-                pd.DataFrame.from_records(
-                    [{"timestamp": metrics.now_string(), "heading": heading}]
-                ),
-            ]
-        )
+        metrics.append("imu", heading=heading)
         logger.info(f"Heading = {heading}")
 
 
@@ -317,14 +286,7 @@ def update_disk_usage():
     free = int(float(stat.free) / float(stat.total) * 100.0)
     if metrics.disk.empty or (abs(free - metrics.disk["free"].iloc[-1]) > 0.0):
         broadcast("/free_disk", float(free))
-        metrics.disk = pd.concat(
-            [
-                metrics.disk,
-                pd.DataFrame.from_records(
-                    [{"timestamp": metrics.now_string(), "free": free}]
-                ),
-            ]
-        )
+        metrics.append("disk", free=free)
         logger.info(f"Free disk = {free}")
 
 
@@ -404,20 +366,11 @@ def record_water(address, *args):
     if address != "/water_pressure":
         water_state[address] = value
         return
-    metrics.water = pd.concat(
-        [
-            metrics.water,
-            pd.DataFrame.from_records(
-                [
-                    {
-                        "timestamp": metrics.now_string(),
-                        "temp_f": water_state["/temperature"],
-                        "heater_status": water_state["/water_heater"],
-                        "pressure_psi": value,
-                    }
-                ]
-            ),
-        ]
+    metrics.append(
+        "water",
+        temp_f=water_state["/temperature"],
+        heater_status=water_state["/water_heater"],
+        pressure_psi=value,
     )
     logger.info(
         f"Water temperature = {water_state['/temperature']}, "
