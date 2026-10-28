@@ -19,7 +19,7 @@ It does four jobs:
    heater, the LED driver, the poof controller, and phones and tablets
    running TouchOSC.
 3. **Log everything** -- rolling CSV histories of pressure, position, heading,
-   disk and the water bath, written to disk every 15 minutes.  This process is
+   disk, poofs and the water bath, written to disk every 15 minutes.  This process is
    the rig's data logger, including for values other devices produce.
 4. **Phone home** -- the last known position goes out over an XBee serial link
    to the base station, which is off the WiFi network and often out of range of
@@ -110,13 +110,25 @@ next pass rather than taking the car's instrumentation down.
 Poof detection
 --------------
 
-`poof_track.py` turns raw ADC counts into PSI (`counts * 10 / 2000 + 10`,
+`/poof_count` counts presses of the poof button.  rhb-poof-controller sends
+`/poof 1.0` on press and `/poof 0.0` on release; `ButtonPoofTrack` in
+`poof_track.py` counts each change to pressed and adds up the time held.  The
+controller sends every release three times and `0.0` at boot, so only a change
+of state counts.  A press broadcasts `/poof_count` immediately, and it goes
+out again with the 5 second rebroadcast.
+
+The older pressure based detector still runs alongside it, for comparison.
+`PoofTrack` turns raw ADC counts into PSI (`counts * 10 / 2000 + 10`,
 truncated to 0.1) and watches for the pressure drop a firing poofer causes.
 While the car is idle it keeps a rolling median of the last 10,000 readings as
 the base pressure.  A reading more than 3 PSI away from that base starts a
-poof; returning to or below the base ends it.  The result is `/poof_count`,
-the red PiGlow LED, and a cumulative poof time.  Base pressure is only updated
-while not poofing, so a long burn cannot drag the reference down with it.
+poof; returning to or below the base ends it.  It still drives the red PiGlow
+LED and decides when pressure history is recorded, but no longer drives
+`/poof_count`.  Base pressure is only updated while not poofing, so a long
+burn cannot drag the reference down with it.
+
+Both detectors write each start and stop to `poofs_*.csv`, tagged `button`
+or `pressure`, so a session's two counts can be lined up afterwards.
 
 Detecting a disconnected sensor
 -------------------------------
@@ -141,7 +153,7 @@ the last good pressure keeps being broadcast so the gauges stay alive.
 Data logging
 ------------
 
-`metric_logging.py` accumulates five pandas frames in memory and writes them
+`metric_logging.py` accumulates six pandas frames in memory and writes them
 to `/home/pi/development/data` every 15 minutes as
 `<kind>_YYYYMMDD_HH_MM.csv` (`$RHB_DATA_DIR/data` when that is set):
 
@@ -152,6 +164,7 @@ to `/home/pi/development/data` every 15 minutes as
 | `heading_*.csv` | timestamp, heading |
 | `water_*.csv` | timestamp, temp_f, heater_status, pressure_psi |
 | `disk_*.csv` | timestamp, free |
+| `poofs_*.csv` | timestamp, source (`button` or `pressure`), event (`start` or `stop`), count, poof_time |
 
 Each period rewrites the current file and then starts a fresh buffer, so a
 window is written repeatedly as it fills and closed out when the timestamp
@@ -169,7 +182,8 @@ must never emit it, and must never re-broadcast one it received.
 | --- | --- | --- |
 | `/pressure` | rhb-sensor-monitor | Accumulator pressure, PSI, rounded |
 | `/pressure_fine` | rhb-sensor-monitor | Accumulator pressure, PSI, unrounded |
-| `/poof_count` | rhb-sensor-monitor | Poofs since startup |
+| `/poof_count` | rhb-sensor-monitor | Poof button presses since startup |
+| `/poof` | rhb-poof-controller | Poof button, 1.0 pressed, 0.0 released |
 | `/position/lat`, `/position/lon`, `/position/alt`, `/position/inferred_speed` | rhb-sensor-monitor | GPS fix |
 | `/imu`, `/heading`, `/cardinal` | rhb-sensor-monitor | BerryIMU orientation |
 | `/free_disk` | rhb-sensor-monitor | Free disk, percent |
@@ -189,15 +203,17 @@ Consumers match addresses exactly.  A substring test is not safe here:
 Publishing must not be able to fail partway.  `broadcast()` isolates every
 send, so one unreachable listener cannot silence the ones after it in the
 client list, and it also refuses to raise on a value it cannot encode.  Both
-matter most to `/poof_count`: it is the only address with no on-change
-producer, it is sent from the tail of one periodic function, and the readouts
-that show it sit late in the client list while the dial sits first.  The
+matter most to `/poof_count`: it is sent on a button press and otherwise
+only from the periodic rebroadcast, and the readouts that show it sit late in
+the client list while the dial sits first.  The
 failure that costs you is silent and asymmetric -- the gauges keep working
 while the poof count sits at zero until whatever was broken clears.
 
 rhb-sensor-monitor records the water bath history it receives into
 `water_*.csv` because it is the rig's data logger, but it publishes none of it.
-Its dispatcher maps only what it records, accepts and drops the two setpoints
+It counts `/poof` from the poof controller into `/poof_count` and never
+re-broadcasts `/poof` itself.  Its dispatcher maps only what it uses, accepts
+and drops the two setpoints
 the display uses, and logs anything else that arrives as unexpected.
 
 WiFi listeners must not sleep

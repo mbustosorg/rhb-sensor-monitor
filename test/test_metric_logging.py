@@ -53,6 +53,7 @@ def test_persist(tmp_path, monkeypatch):
     clocks.advance(15 * 60 + 1)
     metrics.persist()
     assert (tmp_path / "pressure_20260830_23_00.csv").exists()
+    assert (tmp_path / "poofs_20260830_23_00.csv").exists()
 
 
 def test_persist_survives_the_clock_being_set_back(tmp_path, monkeypatch):

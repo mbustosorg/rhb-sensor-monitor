@@ -41,6 +41,7 @@ class MetricLogging:
         self.imu = None
         self.water = None
         self.disk = None
+        self.poofs = None
         self.persist_period = persist_period
         self.broadcast_period = broadcast_period
         self.initialize()
@@ -57,6 +58,7 @@ class MetricLogging:
         self.imu = pd.DataFrame(columns=["timestamp", "heading", "speed"])
         self.water = pd.DataFrame(columns=["timestamp", "temp_f", "heater_status", "pressure_psi"])
         self.disk = pd.DataFrame(columns=["timestamp", "free"])
+        self.poofs = pd.DataFrame(columns=["timestamp", "source", "event", "count", "poof_time"])
 
     def persist(self):
         """ Store off histories periodically """
@@ -80,6 +82,9 @@ class MetricLogging:
             )
             self.disk.to_csv(
                 os.path.join(self.location, "disk_" + timestamp + ".csv"), index=False
+            )
+            self.poofs.to_csv(
+                os.path.join(self.location, "poofs_" + timestamp + ".csv"), index=False
             )
             if self.last_persist_timestamp != timestamp:
                 self.last_persist_timestamp = timestamp

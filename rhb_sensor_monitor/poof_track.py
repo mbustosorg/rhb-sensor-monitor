@@ -25,11 +25,64 @@ INSTANT_PRESSURE_QUEUE_LEN = 40
 logger = logging.getLogger("rhb-sensor-monitor")
 
 
-class PoofTrack:
+class PoofCounter:
+    """Poof count and cumulative poof time, from whatever says a poof started"""
+
     def __init__(self):
         self.poof_start = None
         self.poof_count = 0
         self.poof_time = 0.0
+
+    def poofing(self):
+        """ Are we poofing? """
+        return self.poof_start is not None
+
+    def start(self):
+        """ Poof start detected """
+        # Monotonic, so a clock set from GPS mid-poof cannot make one hours long
+        self.poof_start = time.monotonic()
+        self.poof_count += 1
+
+    def stop(self):
+        """ Poof stop detected """
+        if self.poof_start is not None:
+            self.poof_time = (
+                self.poof_time
+                + (time.monotonic() - self.poof_start)
+            )
+            self.poof_start = None
+
+
+class ButtonPoofTrack(PoofCounter):
+    """Poofs as rhb-poof-controller's button reports them on /poof
+
+    The controller sends 1.0 on press and 0.0 on release, and sends the
+    release three times over in case one is lost.  Only a change of state
+    counts, so a repeated value is harmless.
+    """
+
+    def update(self, value) -> bool:
+        """Apply one /poof value; True when it started or ended a poof"""
+        if float(value) >= 0.5:
+            if self.poofing():
+                return False
+            self.start()
+        else:
+            if not self.poofing():
+                return False
+            self.stop()
+        return True
+
+
+class PoofTrack(PoofCounter):
+    """Poofs inferred from the accumulator pressure drop
+
+    Superseded by ButtonPoofTrack as the source of /poof_count, and kept
+    running so the two can be compared.
+    """
+
+    def __init__(self):
+        super().__init__()
         self.pressure_queue = deque(maxlen=PRESSURE_QUEUE_LEN)
         self.instant_pressure_queue = deque(maxlen=INSTANT_PRESSURE_QUEUE_LEN)
         self.last_pressure = 0.0
@@ -64,21 +117,3 @@ class PoofTrack:
                 self.stop()
                 logger.info(f"PoofStop --> Count: {self.poof_count}, last_pressure: {self.last_pressure}, base_pressure: {self.base_pressure}")
 
-    def poofing(self):
-        """ Are we poofing? """
-        return self.poof_start is not None
-
-    def start(self):
-        """ Poof start detected """
-        # Monotonic, so a clock set from GPS mid-poof cannot make one hours long
-        self.poof_start = time.monotonic()
-        self.poof_count += 1
-
-    def stop(self):
-        """ Poof stop detected """
-        if self.poof_start is not None:
-            self.poof_time = (
-                self.poof_time
-                + (time.monotonic() - self.poof_start)
-            )
-            self.poof_start = None

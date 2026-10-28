@@ -91,6 +91,8 @@ last_pressure_timestamp = time.monotonic()
 # When the last position was logged, for the speed inferred from the next one
 last_position_time = time.monotonic()
 
+# The button is the poof count; the pressure drop is kept for comparison
+button_poof_track = pt.ButtonPoofTrack()
 poof_track = pt.PoofTrack()
 pressure_health = ph.PressureHealth()
 water_state = {"/temperature": 0.0, "/water_heater": 0.0}
@@ -187,6 +189,30 @@ def update_position(gps):
             logger.info(fr"Speed = {inferred_speed}")
 
 
+def record_poof(source, tracker):
+    """Log a poof starting or stopping
+
+    Both trackers write here, so poofs_*.csv lines up what the button said
+    against what the pressure drop said.
+    """
+    metrics.poofs = pd.concat(
+        [
+            metrics.poofs,
+            pd.DataFrame.from_records(
+                [
+                    {
+                        "timestamp": metrics.now_string(),
+                        "source": source,
+                        "event": "start" if tracker.poofing() else "stop",
+                        "count": tracker.poof_count,
+                        "poof_time": tracker.poof_time,
+                    }
+                ]
+            ),
+        ]
+    )
+
+
 @handle_exception
 def update_pressure():
     """ Broadcast the current accumulator pressure """
@@ -197,6 +223,7 @@ def update_pressure():
     if not pressure_health.update(raw_pressure):
         if was_connected and poof_track.poofing():
             poof_track.stop()
+            record_poof("pressure", poof_track)
             piglow.red(0)
             piglow.show()
         if update:
@@ -210,7 +237,10 @@ def update_pressure():
         broadcast("/pressure", float(round(float(poof_track.last_pressure))))
         broadcast("/pressure_fine", poof_track.last_pressure)
         last_pressure_timestamp = time.monotonic()
+        was_poofing = poof_track.poofing()
         poof_track.add_observation(pressure)
+        if poof_track.poofing() != was_poofing:
+            record_poof("pressure", poof_track)
     if metrics.pressure.empty or poof_track.poofing():
         piglow.red(64)
         piglow.show()
@@ -308,9 +338,9 @@ def broadcast_last():
             logger.error(str(exception))
     if metrics.time_to_broadcast():
         logger.debug("State broadcast")
-        # This is the only path that produces /poof_count, so it goes first.
-        # Everything below is a repeat of a value that is also sent on change.
-        broadcast("/poof_count", float(poof_track.poof_count))
+        # /poof_count goes first: a listener that missed the on-change send
+        # only converges here.  Everything below is also sent on change.
+        broadcast("/poof_count", float(button_poof_track.poof_count))
         #broadcast("/poof_seconds", float(poof_track.poof_time))
         broadcast("/pressure", float(round(float(poof_track.last_pressure))))
         if metrics.position.shape[0] > 0:
@@ -395,6 +425,26 @@ def record_water(address, *args):
     )
 
 
+@handle_exception
+def record_poof_button(address, *args):
+    """Count a poof from rhb-poof-controller's button
+
+    /poof_count goes out at once on a press, not just on the next periodic
+    rebroadcast, so the readouts tick with the button.
+    """
+    if not button_poof_track.update(args[0]):
+        return
+    record_poof("button", button_poof_track)
+    if button_poof_track.poofing():
+        broadcast("/poof_count", float(button_poof_track.poof_count))
+        logger.info(
+            f"Poof button pressed --> Count: {button_poof_track.poof_count}, "
+            f"pressure count: {poof_track.poof_count}"
+        )
+    else:
+        logger.info(f"Poof button released --> Poof time: {button_poof_track.poof_time:.2f}")
+
+
 def ignore_osc(address, *args):
     """Accept and drop -- known traffic this monitor has no use for"""
 
@@ -417,8 +467,7 @@ async def init_main(monitor_ip):
     # Static setpoints; the body display shows them, this monitor does not
     dispatcher.map("/upper_temp", ignore_osc)
     dispatcher.map("/lower_temp", ignore_osc)
-    # The poof button; poofs are counted from the pressure drop instead
-    dispatcher.map("/poof", ignore_osc)
+    dispatcher.map("/poof", record_poof_button)
     dispatcher.set_default_handler(handle_unexpected)
     server = AsyncIOOSCUDPServer((monitor_ip, 8888), dispatcher, asyncio.get_event_loop())
     transport, protocol = await server.create_serve_endpoint()

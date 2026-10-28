@@ -48,3 +48,27 @@ def test_two_poofs():
         tracker.add_observation(i)
     assert tracker.poofing()
     assert tracker.poof_count == 2
+
+def test_button_counts_presses():
+    """ Each press is one poof, and the release ends it """
+    tracker = pt.ButtonPoofTrack()
+    assert not tracker.poofing()
+    assert tracker.update(1.0)
+    assert tracker.poofing()
+    assert tracker.update(0.0)
+    assert not tracker.poofing()
+    assert tracker.update(1.0)
+    assert tracker.poof_count == 2
+
+
+def test_button_ignores_repeats():
+    """ The controller sends each release three times and 0.0 at boot """
+    tracker = pt.ButtonPoofTrack()
+    assert not tracker.update(0.0)
+    assert tracker.update(1.0)
+    assert not tracker.update(1.0)
+    assert tracker.update(0.0)
+    assert not tracker.update(0.0)
+    assert not tracker.update(0.0)
+    assert tracker.poof_count == 1
+    assert tracker.poof_time >= 0.0
