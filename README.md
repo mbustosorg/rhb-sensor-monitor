@@ -3,27 +3,14 @@ Red Hot Beverly Sensors Monitor
 
 [![Build Status](https://travis-ci.org/mbustosorg/rhb-sensor-monitor.svg?branch=master)](https://travis-ci.org/mbustosorg/rhb-sensor-monitor)
 
-`rhb-sensor-monitor` is the sensor and telemetry daemon for the Red Hot
-Beverly.  It runs on the Raspberry Pi in the body of
-the car (`rhbbody.local`, `192.168.1.3`) and is the one process that knows what
-the vehicle is physically doing: how much propane pressure is in the
-accumulator, when the poofer fires, where the car is, which way it is pointed,
-and what the water bath is up to.
+The Red Hot Beverly's sensor and telemetry daemon, on the Raspberry Pi in the
+body of the car (`rhbbody.local`, `192.168.1.3`).
 
-It does four jobs:
-
-1. **Read the sensors** -- accumulator pressure over I2C, orientation from a
-   BerryIMU, position from `gpsd`, disk health from the filesystem.
-2. **Publish over OSC** -- one UDP datagram per value, sent directly to every
-   listener on the car: the dial driver, the driver's display, the water
-   heater, the LED driver, the poof controller, and phones and tablets
-   running TouchOSC.
-3. **Log everything** -- rolling CSV histories of pressure, position, heading,
-   disk, poofs and the water bath, streamed to disk as they happen.  This process is
-   the rig's data logger, including for values other devices produce.
-4. **Phone home** -- the last known position goes out over an XBee serial link
-   to the base station, which is off the WiFi network and often out of range of
-   it.
+1. **Reads the sensors**: accumulator pressure, BerryIMU orientation, GPS,
+   disk.
+2. **Publishes over OSC** to every listener on the car.
+3. **Logs everything** to CSV, including values other devices produce.
+4. **Phones home**: the last position goes to the base station over XBee.
 
 ![alt text](images/system.png "")
 
@@ -33,17 +20,16 @@ The rig
 | Host | Address | What runs there |
 | --- | --- | --- |
 | `rhbbody` | 192.168.1.3 | This monitor, plus the Processing driver display on port 10002 |
-| `rhbdial` | 192.168.1.4 | Dial driver -- drives the two gauge servos from `/pressure` |
+| `rhbdial` | 192.168.1.4 | Dial driver: the two gauge servos, from `/pressure` |
 | `rhbbase` | 192.168.1.6 | Home base: XBee receiver and Teensy driving three LED beacons |
-| `rhbwaterheater` | 192.168.1.9 | Pico W running the bath: temperature sensor, heater SSR, pump SSR |
+| `rhbwaterheater` | 192.168.1.9 | Water heater (rhb-water-heater), ESP32-S3-POE-ETH, wired: bath probe, valve SSR |
 | `mobile` | 192.168.1.5, .10, .11 | TouchOSC layouts (`images/mobile_ui.touchosc`) |
-| `rhbleddriver` | 192.168.1.13 | LED driver (rhb-led-driver): pixels on the hose, handle and gauge, via the F16V5 at 192.168.1.20 on its Ethernet |
+| `rhbleddriver` | 192.168.1.13 | LED driver (rhb-led-driver): pixels on the hose, handle and gauge, via the F16V5 at 192.168.1.20 |
 | `beverly` | 192.168.1.14 | Vehicle telemetry (rhb-vehicle-telemetry): CAN bus dashboard; sends OSC only to itself |
-| `rhbpoofcontroller` | 192.168.1.15 | Pico W poof controller (rhb-poof-controller): 12V button sends `/poof`, readouts show pressure and bath temperature |
+| `rhbpoofcontroller` | 192.168.1.15 | Poof controller (rhb-poof-controller), ESP32-S3-POE-ETH, wired: sends `/poof`, shows pressure and bath temperature |
 
-Everything is on a single WiFi router at 192.168.1.1 with static addresses;
-`config/network.txt` is the authoritative list, and `config/*.service` are the
-systemd units that start each piece at boot.
+Static addresses, router at 192.168.1.1.  `config/network.txt` is the
+authoritative list; `config/*.service` are the systemd units.
 
 Hardware on this Pi
 -------------------
@@ -70,93 +56,67 @@ Running it
 | `--display_ip` | `127.0.1.1` | The Processing driver display, normally local |
 | `--display_port` | `10002` | Port the driver display listens on |
 
-In the car it is started by `rhb_body_driver.service` out of
-`/home/pi/development/startup.sh`, with `Restart=always`.  Logs go to
-`rhb-sensor-monitor.log`, rotating at 200 KB with five backups, and to stderr,
-which systemd puts in the journal.  With `RHB_DATA_DIR` set (see "Read-only
-SD card" below) the log file and the CSV histories move under that directory.
+In the car, `rhb_body_driver.service` starts it from
+`/home/pi/development/startup.sh` with `Restart=always`.  It logs to
+`rhb-sensor-monitor.log` (200 KB x 5) and to the journal.  `RHB_DATA_DIR`
+moves the log and CSVs (see "Read-only SD card").
 
-How the main loop works
------------------------
+Main loop
+---------
 
-`main_loop()` is a single asyncio task that cycles roughly every 50 ms
-alongside the OSC server.  Each pass:
+`main_loop()` runs about every 50 ms alongside the OSC server.
 
-* **Persist.**  Sync the streamed histories to disk every 5 seconds and roll
-  to new files every hour.  These, the 5 second
-  rebroadcast, the XBee report and the 500 ms pressure refresh are all timed on
-  `time.monotonic()`.  The Pi boots about seven hours fast and the first GPS
-  fix sets it back; on the wall clock every interval went negative at that
-  step and nothing persisted or rebroadcast until dawn, all of 2026.
-* **Pressure.**  Read the ADC, decide whether the sensor is even connected,
-  convert to PSI, look for a poof, broadcast.  `/pressure` goes out at least
-  every 500 ms so downstream gauges never sit on a stale value.
-* **IMU.**  Compute the tilt compensated heading; broadcast only when it has
-  moved more than 2 degrees away from the mean of the last five samples.
-* **GPS.**  Pull the next `gpsd` sentence.  Once an hour the system clock is
-  set from the fix, since this Pi has no RTC.  Position is broadcast when it
-  has moved about 0.00005 degrees or 5 m of altitude, along with a speed
-  inferred from the geodesic distance to the previous fix.
-* **Disk.**  Free space as a percentage, when it changes.  Currently commented
-  out of the loop; `/free_disk` only moves if it is turned back on.
-* **Periodic rebroadcast.**  Every 5 seconds the last position, heading,
-  pressure and poof count go out again, so a listener that just booted or
-  dropped a packet converges instead of showing nothing.  Every 50 seconds the
-  latest `lat,lon` is pushed over the XBee to the base station.
+| Step | Does |
+| --- | --- |
+| Persist | fsync histories every 5 s, roll to new files hourly |
+| Pressure | Read, check the sensor is connected, look for a poof, broadcast at least every 500 ms |
+| IMU | Broadcast heading when it moves more than 2 degrees from the last five's mean |
+| GPS | Broadcast position on about 0.00005 degrees or 5 m of altitude, with inferred speed; set the clock hourly (no RTC) |
+| Disk | `/free_disk` on change; commented out of the loop |
+| Rebroadcast | Position, heading, pressure and poof count every 5 s; `lat,lon` over XBee every 50 s |
 
-Every peripheral touching function is wrapped in `@handle_exception`, and the
-loop body has its own `try` around it: a sensor that fails logs and is retried
-next pass rather than taking the car's instrumentation down.
+All intervals use `time.monotonic()`: the Pi boots about seven hours fast,
+and when GPS set the clock back, wall clock intervals went negative and
+nothing persisted until dawn.
+
+Every peripheral call is wrapped in `@handle_exception`, so a failing sensor
+logs and is retried next pass.
 
 Poof detection
 --------------
 
-`/poof_count` counts presses of the poof button.  rhb-poof-controller sends
-`/poof 1.0` on press and `/poof 0.0` on release; `ButtonPoofTrack` in
-`poof_track.py` counts each change to pressed and adds up the time held.  The
-controller sends every release three times and `0.0` at boot, so only a change
-of state counts.  A press broadcasts `/poof_count` immediately, and it goes
-out again with the 5 second rebroadcast.
+`/poof_count` counts presses of the poof button.  `ButtonPoofTrack` in
+`poof_track.py` counts changes to pressed in `/poof` and adds up the time
+held; only a change counts, since the controller repeats releases.  A press
+broadcasts `/poof_count` immediately.
 
-The older pressure based detector still runs alongside it, for comparison.
-`PoofTrack` turns raw ADC counts into PSI (`counts * 10 / 2000 + 10`,
-truncated to 0.1) and watches for the pressure drop a firing poofer causes.
-While the car is idle it keeps a rolling median of the last 10,000 readings as
-the base pressure.  A reading more than 3 PSI away from that base starts a
-poof; returning to or below the base ends it.  It still drives the red PiGlow
-LED and decides when pressure history is recorded, but no longer drives
-`/poof_count`.  Base pressure is only updated while not poofing, so a long
-burn cannot drag the reference down with it.
+The older pressure detector, `PoofTrack`, still runs for comparison and
+drives the red PiGlow LED and pressure history.  It converts counts to PSI
+(`counts * 10 / 2000 + 10`, truncated to 0.1) and starts a poof more than
+3 PSI from the base pressure, a rolling median of 10,000 idle readings.  The
+base isn't updated while poofing.
 
-Both detectors write each start and stop to `poofs_*.csv`, tagged `button`
-or `pressure`, so a session's two counts can be lined up afterwards.
+Both write `poofs_*.csv`, tagged `button` or `pressure`.
 
 Detecting a disconnected sensor
 -------------------------------
 
-`pressure_health.py` exists because an unplugged transducer does not read zero
--- the ADC input floats and produces plausible looking numbers in the 0 to
-25 PSI band, which the poof tracker would happily interpret as poofing.
+An unplugged transducer floats and reads a plausible 0-25 PSI.
+`pressure_health.py` tells them apart by smoothness: across 2023-2025
+sessions a connected sensor's rolling median step stayed under 400 counts,
+a floating one 2100-3030.  The threshold is 1000 counts over a 40 sample
+window.  Readings near the rails (30,000 counts) and failed I2C reads also
+count as bad.
 
-The discriminator is smoothness.  Across every archived session from 2023
-through 2025 a connected sensor's rolling median sample to sample step stayed
-under 400 counts (2 PSI) even through the fastest poofs, while a floating
-input put the same statistic at 2100 to 3030 counts.  The threshold sits in
-the middle of that gap at 1000 counts (5 PSI), measured over a 40 sample
-window.  A reading pegged near the rails (30,000 counts, far beyond the 10,000
-that 60 PSI would produce) or a failed I2C read counts as bad as well.
-
-It takes about a second of junk (20 samples) to declare the sensor gone and
-two seconds of clean readings (40 samples, a full window) to accept it back.
-While disconnected, an in progress poof is ended, no history is recorded, and
-the last good pressure keeps being broadcast so the gauges stay alive.
+20 bad samples (about 1 s) declare it gone; 40 clean ones bring it back.
+While gone, a poof in progress ends, no history is recorded, and the last
+good pressure keeps broadcasting.
 
 Data logging
 ------------
 
-`metric_logging.py` streams six histories to CSV in
-`/home/pi/development/data` (`$RHB_DATA_DIR/data` when that is set), as
-`<kind>_YYYYMMDD_HH_MM.csv`:
+`metric_logging.py` streams to `/home/pi/development/data` (or
+`$RHB_DATA_DIR/data`), as `<kind>_YYYYMMDD_HH_MM.csv`:
 
 | File | Columns |
 | --- | --- |
@@ -167,27 +127,17 @@ Data logging
 | `disk_*.csv` | timestamp, free |
 | `poofs_*.csv` | timestamp, source (`button` or `pressure`), event (`start` or `stop`), count, poof_time |
 
-Each row is written and flushed as it is recorded, and every open file is
-fsynced every 5 seconds, so a power cut loses at most the last few seconds.
-(These used to sit in memory and be written once every 15 minutes; a power
-cut took up to a quarter hour of everything.)
+Rows are flushed as written and fsynced every 5 s, so a power cut loses a few
+seconds.  Files roll hourly; an existing name (after GPS sets the clock back)
+is appended to, never overwritten.  A missing or full stick is logged once
+and retried.
 
-Every hour the files are closed and the next row of each kind opens a new
-one, named for the wall clock at that moment.  A kind with nothing to
-record in a window gets no file.  If a name already exists -- after GPS sets
-the clock back, it can -- the file is appended to, never overwritten.  If the
-stick is missing or full the monitor logs it once, keeps running, and retries
-on the next row.
-
-Archived runs live in `data/`, and the notebooks in `reporting/`
-(`after_activity_report.ipynb`, `voltage.ipynb`) are what the seasons get
-summarized with.
+Archived runs are in `data/`; `reporting/` has the season notebooks.
 
 OSC message ownership
 ---------------------
 
-Every address has exactly one producer.  A device that does not own an address
-must never emit it, and must never re-broadcast one it received.
+Every address has one producer.  Nothing else emits or re-broadcasts it.
 
 | Address | Owner | Payload |
 | --- | --- | --- |
@@ -198,59 +148,39 @@ must never emit it, and must never re-broadcast one it received.
 | `/position/lat`, `/position/lon`, `/position/alt`, `/position/inferred_speed` | rhb-sensor-monitor | GPS fix |
 | `/imu`, `/heading`, `/cardinal` | rhb-sensor-monitor | BerryIMU orientation |
 | `/free_disk` | rhb-sensor-monitor | Free disk, percent |
-| `/temperature` | rhb-water-heater | Water bath temperature, deg F.  The only temperature on the network. |
-| `/water_heater` | rhb-water-heater | Heater on/off |
+| `/temperature` | rhb-water-heater | Water bath temperature, deg F.  The only temperature on the network |
+| `/water_heater` | rhb-water-heater | Bath valve open/shut |
 | `/upper_temp`, `/lower_temp` | rhb-water-heater | Configured bath setpoints, deg F |
 | `/water_pressure` | rhb-water-heater | Bath loop pressure, PSI |
 | `/tick/dial`, `/dial_temperature_cpu` | rhb-dial | That device's own health |
 
-Producers send to every listener directly.  Listeners on a port other than 8888
-are named `host:port` in the producer's client list -- the body display is
-`192.168.1.3:10002`.
-
-Consumers match addresses exactly.  A substring test is not safe here:
-`pressure` also matches `/water_pressure` and `/pressure_fine`.
-
-Publishing must not be able to fail partway.  `broadcast()` isolates every
-send, so one unreachable listener cannot silence the ones after it in the
-client list, and it also refuses to raise on a value it cannot encode.  Both
-matter most to `/poof_count`: it is sent on a button press and otherwise
-only from the periodic rebroadcast, and the readouts that show it sit late in
-the client list while the dial sits first.  The
-failure that costs you is silent and asymmetric -- the gauges keep working
-while the poof count sits at zero until whatever was broken clears.
-
-rhb-sensor-monitor records the water bath history it receives into
-`water_*.csv` because it is the rig's data logger, but it publishes none of it.
-It counts `/poof` from the poof controller into `/poof_count` and never
-re-broadcasts `/poof` itself.  Its dispatcher maps only what it uses, accepts
-and drops the two setpoints
-the display uses, and logs anything else that arrives as unexpected.
+- Listeners off port 8888 are `host:port` in a client list, e.g.
+  `192.168.1.3:10002`.
+- Match addresses exactly: `pressure` is a substring of `/water_pressure`
+  and `/pressure_fine`.
+- `broadcast()` isolates every send and won't raise on an unencodable value,
+  so one bad listener can't silence the rest.  Without that the gauges keep
+  working while `/poof_count`, late in the client list, silently sits at 0.
+- This monitor logs the water bath into `water_*.csv` but publishes none of
+  it, and never re-broadcasts `/poof`.  Unexpected addresses are logged.
 
 WiFi listeners must not sleep
 -----------------------------
 
-Direct delivery assumes every listener answers ARP promptly, and a WiFi board
-in its default power-saving mode does not.  The AP buffers frames for a dozing
-client until the next DTIM beacon, so replies come back hundreds of
-milliseconds late.  Linux senders never notice -- their ARP retries for seconds
-and caches the result for minutes.  The water heater's W5500 resolves ARP
-inside each `sendto` and gives up, so its messages silently never arrive while
-the monitor's do.
-
-Any mains-powered WiFi listener therefore disables power save at startup:
+A WiFi board in power save answers ARP hundreds of milliseconds late.  Linux
+senders retry and don't notice; a W5500 sender gives up inside `sendto`.  Any
+mains powered WiFi listener disables power save at startup:
 
     wlan.config(pm=network.WLAN.PM_NONE)
 
-Symptom when it is missing: one sender reaches a listener and another does not,
-with `Operation timed out. No data sent.` on the sender that fails.
+Symptom: one sender reaches a listener and another doesn't, with
+`Operation timed out. No data sent.` on the failing one.
 
 Read-only SD card
 -----------------
 
-A power cut mid-write is what corrupts SD cards, and this car loses power
-without warning.  `scripts/setup-readonly.sh` makes the card read-only (a RAM
-overlay on top of it) and moves everything worth keeping onto a USB stick:
+Power cuts mid-write corrupt SD cards.  `scripts/setup-readonly.sh` puts a
+RAM overlay over the card and moves what's worth keeping to a USB stick:
 
     lsblk -o NAME,TRAN,SIZE,LABEL           # find the stick, e.g. sda1
     sudo scripts/setup-readonly.sh --device /dev/sda1 --format \
@@ -260,45 +190,40 @@ overlay on top of it) and moves everything worth keeping onto a USB stick:
 Afterwards:
 
 * `/data` is the stick (ext4, label `RHBDATA`).
-* The systemd journal lives on it (`/var/log/journal` is bind-mounted from
-  `/data/journal`), so `journalctl -u rhb_body_driver` survives a reboot.
-* `rhb_body_driver.service` gets `RHB_DATA_DIR=/data/rhb-sensor-monitor`, and
-  the monitor writes `rhb-sensor-monitor.log` and `data/*.csv` there.
-* **If the stick is missing the car still boots and the monitor still runs**;
-  it logs an error and writes to the old paths, which are in RAM and gone at
-  the next power off.
-* Anything else that writes to the card -- including the Processing driver
-  display -- is writing to RAM.
+* The journal lives on it (`/var/log/journal` bind-mounted from
+  `/data/journal`).
+* `rhb_body_driver.service` gets `RHB_DATA_DIR=/data/rhb-sensor-monitor`.
+* **Without the stick the car still boots and the monitor runs**, writing to
+  RAM that's lost at power off.
+* Anything else writing to the card, including the driver display, writes to
+  RAM.
 
-The same script, kept identical, is in `rhb-led-driver`.  To change code or
-packages later, turn the overlay off first: `sudo raspi-config` ->
-Performance Options -> Overlay File System -> No (and No to read-only boot),
-reboot, update, turn it back on, reboot.  `--no-overlay` runs every step
-except that one, to check the stick setup across a reboot first.
+The same script is in `rhb-led-driver`; keep them identical.  To update code
+or packages, turn the overlay off first (`sudo raspi-config` -> Performance
+Options -> Overlay File System -> No, and No to read-only boot), reboot,
+update, turn it back on, reboot.  `--no-overlay` does every step but that
+one.
 
 Installation and calibration
 ----------------------------
 
-Dependencies are in `requirements.txt`; `pandas` comes from
-`apt-get install python3-pandas` rather than pip on the Pi.  Prebuilt SD card
-images for each host are in `config/sd_card_images/`.
+Dependencies are in `requirements.txt`; on the Pi install `pandas` with
+`apt-get install python3-pandas`.  SD card images are in
+`config/sd_card_images/`.
 
-After physically mounting the IMU, run
-`rhb_sensor_monitor/imu/calibrateBerryIMU.py` and copy the resulting magnetometer
-minimums and maximums into `berryIMU.py`; rotate the assembly through more
-orientations than feels necessary.  Then update the position of the circle on
-the Bev logo so it points the right way relative to the car.  `IMU_UPSIDE_DOWN`
-in `berryIMU.py` covers mounting the board with the logo facing up.
+After mounting the IMU, run `rhb_sensor_monitor/imu/calibrateBerryIMU.py`
+through as many orientations as you can and copy the magnetometer minimums
+and maximums into `berryIMU.py`.  Then align the circle on the Bev logo with
+the car.  `IMU_UPSIDE_DOWN` covers mounting it logo up.
 
 Tests
 -----
 
     pytest
 
-`test/` covers the pieces that can run off the car: poof tracking, disconnect
-detection against synthesized idle and floating traces, metric logging, and an
-OSC sender (`test_osc.py`) that walks every address so listeners can be
-exercised from a laptop.  `rhb_sensor_monitor/rhb-test-dial.py` drives the dial
-directly for bench testing.
+`test/` covers what runs off the car: poof tracking, disconnect detection,
+metric logging, and `test_osc.py`, which sends every address to exercise
+listeners from a laptop.  `rhb_sensor_monitor/rhb-test-dial.py` drives the
+dial directly.
 
 Licensed under the GPL v3; see `LICENSE`.
